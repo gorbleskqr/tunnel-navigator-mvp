@@ -5,9 +5,12 @@ import {
   Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type GestureResponderEvent,
 } from 'react-native';
@@ -17,6 +20,8 @@ import {
   clamp,
   clampViewport,
   distance,
+  worldToScreenX,
+  worldToScreenY,
   screenToWorldX,
   screenToWorldY,
 } from '../services/geometryService';
@@ -220,6 +225,9 @@ function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
 }
 
 export default function GraphCanvas() {
+  const windowSize = useWindowDimensions();
+  const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0;
+  const bottomInset = Platform.OS === 'android' ? 44 : 0;
   const [slots, setSlots] = useState<Slot[]>(() => buildSlotsFromGraph(graph));
   const [edges, setEdges] = useState<Edge[]>(() => graph.edges.map((edge) => ({ ...edge })));
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -399,6 +407,21 @@ export default function GraphCanvas() {
     };
   }, [bounds]);
 
+  useEffect(() => {
+    if (viewportSize.width > 0 && viewportSize.height > 0) {
+      return;
+    }
+
+    if (windowSize.width <= 0 || windowSize.height <= 0) {
+      return;
+    }
+
+    setViewportSize({
+      width: windowSize.width,
+      height: windowSize.height,
+    });
+  }, [viewportSize.height, viewportSize.width, windowSize.height, windowSize.width]);
+
   const gridModel = useMemo(() => {
     if (!editLayoutMode) {
       return {
@@ -459,13 +482,18 @@ export default function GraphCanvas() {
     setViewportClamped(unclamped);
   };
 
+  const getPreferredFocusScale = (): number => {
+    const preferred = Math.max(zoomLimits.minScale * 2.8, 0.72);
+    return clampScalar(preferred, zoomLimits.minScale, zoomLimits.maxScale);
+  };
+
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0 || slots.length === 0 || initializedRef.current) {
       return;
     }
 
     initializedRef.current = true;
-    const startScale = clampScalar(zoomLimits.minScale * 1.35, zoomLimits.minScale, zoomLimits.maxScale);
+    const startScale = getPreferredFocusScale();
     setViewport(() => {
       const slot = slotById.get(DEFAULT_CENTER_SLOT_ID) ?? slots[0];
       const centered: Viewport = {
@@ -852,12 +880,13 @@ export default function GraphCanvas() {
       const worldY = screenToWorldY(touch.y, currentViewport);
       const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
       const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
+      const deleteZoneTop = viewportSizeRef.current.height - (DELETE_ZONE_HEIGHT + 12 + bottomInset);
 
       const nextDrag: DraggingEndpointState = {
         endpointId: currentInteraction.endpointId,
         worldX,
         worldY,
-        overDeleteZone: touch.y >= viewportSizeRef.current.height - DELETE_ZONE_HEIGHT,
+        overDeleteZone: touch.y >= deleteZoneTop,
         targetSlotId: slotHit?.slot.id ?? null,
       };
 
@@ -1019,7 +1048,9 @@ export default function GraphCanvas() {
 
   return (
     <Animated.View style={[styles.screen, { transform: [{ translateX: shakeX }] }]}>
-      <View style={styles.header}>
+      <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" translucent={false} backgroundColor="#121a26" />
+      <View style={[styles.header, { paddingTop: 14 + topInset }]}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>Tunnel Navigator</Text>
           <Text style={styles.subtitle}>
@@ -1043,7 +1074,7 @@ export default function GraphCanvas() {
 
           {editLayoutMode ? (
             <Pressable
-              style={styles.headerButton}
+              style={[styles.headerButton, styles.headerButtonSpacer]}
               onPress={() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length)}
             >
               <Text style={styles.headerButtonText}>Grid {gridSize}</Text>
@@ -1051,7 +1082,7 @@ export default function GraphCanvas() {
           ) : null}
 
           {editLayoutMode ? (
-            <Pressable style={styles.headerButton} onPress={() => setExportVisible(true)}>
+            <Pressable style={[styles.headerButton, styles.headerButtonSpacer]} onPress={() => setExportVisible(true)}>
               <Text style={styles.headerButtonText}>Export</Text>
             </Pressable>
           ) : null}
@@ -1075,22 +1106,7 @@ export default function GraphCanvas() {
       >
         <View style={styles.canvasBackdrop} />
 
-        <View
-          pointerEvents="none"
-          style={[
-            styles.world,
-            {
-              width: worldSize.width,
-              height: worldSize.height,
-              transform: [
-                { translateX: viewport.tx },
-                { translateY: viewport.ty },
-                { scale: viewport.scale },
-              ],
-              ...(Platform.OS === 'web' ? ({ transformOrigin: '0px 0px' } as const) : null),
-            },
-          ]}
-        >
+        <View pointerEvents="none" style={styles.sceneLayer}>
           {editLayoutMode ? (
             <>
               {gridModel.xValues.map((x) => (
@@ -1099,9 +1115,9 @@ export default function GraphCanvas() {
                   style={[
                     styles.gridLineVertical,
                     {
-                      left: x,
-                      top: gridModel.minY,
-                      height: Math.max(1, gridModel.maxY - gridModel.minY),
+                      left: worldToScreenX(x, viewport),
+                      top: worldToScreenY(gridModel.minY, viewport),
+                      height: Math.max(1, (gridModel.maxY - gridModel.minY) * viewport.scale),
                     },
                   ]}
                 />
@@ -1112,9 +1128,9 @@ export default function GraphCanvas() {
                   style={[
                     styles.gridLineHorizontal,
                     {
-                      top: y,
-                      left: gridModel.minX,
-                      width: Math.max(1, gridModel.maxX - gridModel.minX),
+                      top: worldToScreenY(y, viewport),
+                      left: worldToScreenX(gridModel.minX, viewport),
+                      width: Math.max(1, (gridModel.maxX - gridModel.minX) * viewport.scale),
                     },
                   ]}
                 />
@@ -1127,8 +1143,8 @@ export default function GraphCanvas() {
                       style={[
                         styles.gridIntersection,
                         {
-                          left: x - 1.5,
-                          top: y - 1.5,
+                          left: worldToScreenX(x, viewport) - 1.5,
+                          top: worldToScreenY(y, viewport) - 1.5,
                         },
                       ]}
                     />
@@ -1143,8 +1159,12 @@ export default function GraphCanvas() {
             const segments = getEdgeSegments(edge, slotById);
 
             return segments.map((segment, segmentIndex) => {
-              const dx = segment.x2 - segment.x1;
-              const dy = segment.y2 - segment.y1;
+              const x1 = worldToScreenX(segment.x1, viewport);
+              const y1 = worldToScreenY(segment.y1, viewport);
+              const x2 = worldToScreenX(segment.x2, viewport);
+              const y2 = worldToScreenY(segment.y2, viewport);
+              const dx = x2 - x1;
+              const dy = y2 - y1;
               const length = Math.sqrt(dx * dx + dy * dy);
               if (length <= 0.001) {
                 return null;
@@ -1158,8 +1178,8 @@ export default function GraphCanvas() {
                   style={[
                     styles.edge,
                     {
-                      left: (segment.x1 + segment.x2) / 2 - length / 2,
-                      top: (segment.y1 + segment.y2) / 2 - (isHighlighted ? 2 : 1),
+                      left: (x1 + x2) / 2 - length / 2,
+                      top: (y1 + y2) / 2 - (isHighlighted ? 2 : 1),
                       width: length,
                       height: isHighlighted ? 4 : 2,
                       backgroundColor: isHighlighted ? '#f7f7f7' : (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
@@ -1176,12 +1196,30 @@ export default function GraphCanvas() {
             const highlighted = highlightedSlotIds.has(slot.id);
             const isDropTarget = dropPreviewSlotId === slot.id;
             const isExitOnly = slot.node.exitOnly;
+            const slotScreenX = worldToScreenX(slot.x, viewport);
+            const slotScreenY = worldToScreenY(slot.y, viewport);
+            const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
 
             return (
-              <View key={slot.id} style={[styles.slotWrap, { left: slot.x - SLOT_RADIUS, top: slot.y - SLOT_RADIUS }]}>
+              <View
+                key={slot.id}
+                style={[
+                  styles.slotWrap,
+                  {
+                    left: slotScreenX - slotRadius,
+                    top: slotScreenY - slotRadius,
+                    width: slotRadius * 2,
+                  },
+                ]}
+              >
                 <View
                   style={[
                     styles.slot,
+                    {
+                      width: slotRadius * 2,
+                      height: slotRadius * 2,
+                      borderRadius: slotRadius,
+                    },
                     { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
                     isExitOnly ? styles.slotExitOnly : null,
                     highlighted ? styles.slotHighlighted : null,
@@ -1206,6 +1244,9 @@ export default function GraphCanvas() {
             const x = drag ? drag.worldX : baseSlot.x;
             const y = drag ? drag.worldY : baseSlot.y;
             const isStart = endpoint.id === 'start';
+            const endpointScreenX = worldToScreenX(x, viewport);
+            const endpointScreenY = worldToScreenY(y, viewport);
+            const endpointRadius = clamp(ENDPOINT_RADIUS * viewport.scale, 11, 40);
 
             return (
               <View
@@ -1213,14 +1254,26 @@ export default function GraphCanvas() {
                 style={[
                   styles.endpointWrap,
                   {
-                    left: x - ENDPOINT_RADIUS,
-                    top: y - ENDPOINT_RADIUS,
+                    left: endpointScreenX - endpointRadius,
+                    top: endpointScreenY - endpointRadius,
+                    width: endpointRadius * 2,
+                    height: endpointRadius * 2,
                     opacity: drag ? 0.94 : 1,
                     transform: [{ scale: drag ? 1.07 : 1 }],
                   },
                 ]}
               >
-                <View style={[styles.endpoint, isStart ? styles.endpointStart : styles.endpointEnd]}>
+                <View
+                  style={[
+                    styles.endpoint,
+                    {
+                      width: endpointRadius * 2,
+                      height: endpointRadius * 2,
+                      borderRadius: endpointRadius,
+                    },
+                    isStart ? styles.endpointStart : styles.endpointEnd,
+                  ]}
+                >
                   <Text style={styles.endpointText}>{isStart ? 'A' : 'B'}</Text>
                 </View>
               </View>
@@ -1229,15 +1282,17 @@ export default function GraphCanvas() {
         </View>
 
         {blockedMessage ? (
-          <View style={styles.blockedToast}>
+          <View pointerEvents="none" style={styles.blockedToast}>
             <Text style={styles.blockedToastText}>{blockedMessage}</Text>
           </View>
         ) : null}
 
         {draggingEndpoint ? (
           <View
+            pointerEvents="none"
             style={[
               styles.deleteZone,
+              { bottom: 12 + bottomInset },
               draggingEndpoint.overDeleteZone ? styles.deleteZoneActive : null,
             ]}
           >
@@ -1245,26 +1300,38 @@ export default function GraphCanvas() {
           </View>
         ) : null}
 
-        <View style={styles.zoomControls}>
-          <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(1.16)}>
-            <Text style={styles.zoomButtonText}>+</Text>
-          </Pressable>
-          <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(0.86)}>
-            <Text style={styles.zoomButtonText}>-</Text>
-          </Pressable>
+        <View style={[styles.zoomControls, { bottom: 10 + bottomInset }]}>
+          {Platform.OS === 'web' ? (
+            <>
+              <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(1.16)}>
+                <Text style={styles.zoomButtonText}>+</Text>
+              </Pressable>
+              <Pressable style={[styles.zoomButton, styles.zoomButtonSpacer]} onPress={() => zoomByFactor(0.86)}>
+                <Text style={styles.zoomButtonText}>-</Text>
+              </Pressable>
+            </>
+          ) : null}
           <Pressable
-            style={styles.zoomButton}
+            style={[styles.zoomButton, Platform.OS === 'web' ? styles.zoomButtonSpacer : null]}
             onPress={() => {
-              centerOnSlot(DEFAULT_CENTER_SLOT_ID, clampScalar(zoomLimits.minScale * 1.35, zoomLimits.minScale, zoomLimits.maxScale));
+              centerOnSlot(DEFAULT_CENTER_SLOT_ID, getPreferredFocusScale());
             }}
           >
             <Text style={styles.zoomButtonText}>C</Text>
           </Pressable>
         </View>
+
+        {__DEV__ ? (
+          <View pointerEvents="none" style={styles.debugPill}>
+            <Text style={styles.debugPillText}>
+              {`slots:${slots.length} scale:${viewport.scale.toFixed(2)} tx:${Math.round(viewport.tx)} ty:${Math.round(viewport.ty)} view:${Math.round(viewportSize.width)}x${Math.round(viewportSize.height)}`}
+            </Text>
+          </View>
+        ) : null}
       </View>
 
       {routes.length > 0 ? (
-        <View style={styles.routeInfoBar}>
+        <View style={[styles.routeInfoBar, { paddingBottom: 18 + bottomInset }]}>
           <Text style={styles.routeInfoText}>
             Distance: {routes[0].distance}  |  Equal shortest paths: {routes.length}
           </Text>
@@ -1283,9 +1350,9 @@ export default function GraphCanvas() {
             {selectedEdge ? (
               <>
                 <Text style={styles.edgeEditorMeta}>{`${selectedEdge.from} -> ${selectedEdge.to}`}</Text>
-                <Text style={styles.edgeEditorMeta}>Type: {selectedEdge.type}</Text>
+                <Text style={[styles.edgeEditorMeta, styles.edgeEditorMetaSpacing]}>Type: {selectedEdge.type}</Text>
 
-                <View style={styles.edgeEditorRow}>
+                <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
                   <Text style={styles.edgeEditorLabel}>Weight</Text>
                   <View style={styles.edgeEditorStepper}>
                     <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(-1)}>
@@ -1298,7 +1365,7 @@ export default function GraphCanvas() {
                   </View>
                 </View>
 
-                <View style={styles.edgeEditorRow}>
+                <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
                   <Text style={styles.edgeEditorLabel}>Mode</Text>
                   <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeMode}>
                     <Text style={styles.edgeEditorActionBtnText}>
@@ -1308,7 +1375,7 @@ export default function GraphCanvas() {
                 </View>
 
                 {(selectedEdge.render?.mode ?? 'straight') === 'orthogonal' ? (
-                  <View style={styles.edgeEditorRow}>
+                  <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
                     <Text style={styles.edgeEditorLabel}>Bend</Text>
                     <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeBend}>
                       <Text style={styles.edgeEditorActionBtnText}>{getEdgeBendMode(selectedEdge)}</Text>
@@ -1342,6 +1409,7 @@ export default function GraphCanvas() {
           </ScrollView>
         </View>
       </Modal>
+      </SafeAreaView>
     </Animated.View>
   );
 }
@@ -1361,7 +1429,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
   },
   headerLeft: {
     flex: 1,
@@ -1381,7 +1448,9 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+  },
+  headerButtonSpacer: {
+    marginLeft: 8,
   },
   headerButton: {
     paddingHorizontal: 11,
@@ -1411,10 +1480,8 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: '#0e1724',
   },
-  world: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
+  sceneLayer: {
+    ...StyleSheet.absoluteFillObject,
   },
   edge: {
     position: 'absolute',
@@ -1546,7 +1613,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 10,
     bottom: 10,
-    gap: 8,
+  },
+  zoomButtonSpacer: {
+    marginTop: 8,
   },
   zoomButton: {
     width: 42,
@@ -1576,6 +1645,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
   },
+  debugPill: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    bottom: 10,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(6, 11, 19, 0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(127, 156, 196, 0.42)',
+  },
+  debugPillText: {
+    color: '#9fbbe3',
+    fontSize: 10,
+    textAlign: 'center',
+  },
   edgeEditorOverlay: {
     flex: 1,
     backgroundColor: 'rgba(6, 10, 16, 0.5)',
@@ -1592,7 +1678,6 @@ const styles = StyleSheet.create({
     borderColor: '#2a3f5e',
     paddingHorizontal: 14,
     paddingVertical: 14,
-    gap: 10,
   },
   edgeEditorTitle: {
     color: '#eef5ff',
@@ -1603,10 +1688,16 @@ const styles = StyleSheet.create({
     color: '#a4b7d5',
     fontSize: 11,
   },
+  edgeEditorMetaSpacing: {
+    marginTop: 2,
+  },
   edgeEditorRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  edgeEditorRowSpacing: {
+    marginTop: 10,
   },
   edgeEditorLabel: {
     color: '#d6e4fa',
@@ -1616,7 +1707,6 @@ const styles = StyleSheet.create({
   edgeEditorStepper: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
   edgeEditorSmallBtn: {
     width: 32,
@@ -1636,6 +1726,7 @@ const styles = StyleSheet.create({
   },
   edgeEditorValue: {
     width: 28,
+    marginHorizontal: 8,
     color: '#e4efff',
     textAlign: 'center',
     fontSize: 15,
