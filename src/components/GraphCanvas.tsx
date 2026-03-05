@@ -5,9 +5,12 @@ import {
   Modal,
   Platform,
   Pressable,
+  SafeAreaView,
   ScrollView,
+  StatusBar,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type GestureResponderEvent,
 } from 'react-native';
@@ -17,6 +20,8 @@ import {
   clamp,
   clampViewport,
   distance,
+  worldToScreenX,
+  worldToScreenY,
   screenToWorldX,
   screenToWorldY,
 } from '../services/geometryService';
@@ -36,9 +41,13 @@ const TAP_RADIUS_PX = 26;
 const DRAG_RADIUS_PX = 28;
 const SNAP_RADIUS_PX = 36;
 const TAP_MOVE_THRESHOLD = 8;
-const DELETE_ZONE_HEIGHT = 104;
+const DELETE_TARGET_SIZE = 78;
+const DELETE_TARGET_MARGIN = 12;
 const DEFAULT_CENTER_SLOT_ID = 'nicol_building';
 const GRID_SIZE_OPTIONS = [40, 80, 120] as const;
+const LABEL_WIDTH = 132;
+const LABEL_HEIGHT = 26;
+const LABEL_VIEWPORT_MARGIN = 20;
 
 const NODE_TYPE_COLORS: Record<string, string> = {
   building: '#3f96ff',
@@ -53,6 +62,9 @@ const EDGE_TYPE_COLORS: Record<string, string> = {
   ramp: '#f2a33a',
   stairs: '#db5b5b',
 };
+
+const ROUTE_COLORS = ['#7fc7ff', '#8de4b8', '#ffd27a', '#ff9fab', '#b8b2ff', '#7ee7e1'] as const;
+const SHARED_ROUTE_COLOR = '#f2f6ff';
 
 type InteractionState =
   | { kind: 'idle' }
@@ -102,6 +114,15 @@ interface EdgeSegment {
   y1: number;
   x2: number;
   y2: number;
+}
+
+interface LabelCandidate {
+  id: string;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  priority: number;
 }
 
 function approxEqual(a: number, b: number): boolean {
@@ -199,6 +220,15 @@ function distanceBetweenTouches(a: TouchPoint, b: TouchPoint): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
+function labelsOverlap(a: LabelCandidate, b: LabelCandidate): boolean {
+  return !(
+    a.right < b.left - 8
+    || a.left > b.right + 8
+    || a.bottom < b.top - 4
+    || a.top > b.bottom + 4
+  );
+}
+
 function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
   if (endpoints.length === 0) {
     return [];
@@ -220,6 +250,9 @@ function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
 }
 
 export default function GraphCanvas() {
+  const windowSize = useWindowDimensions();
+  const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0;
+  const bottomInset = Platform.OS === 'android' ? 44 : 0;
   const [slots, setSlots] = useState<Slot[]>(() => buildSlotsFromGraph(graph));
   const [edges, setEdges] = useState<Edge[]>(() => graph.edges.map((edge) => ({ ...edge })));
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -360,16 +393,26 @@ export default function GraphCanvas() {
     return getRoutes(ordered[0].slotId, ordered[1].slotId, adjacency);
   }, [adjacency, endpoints]);
 
-  const highlightedEdgeKeys = useMemo(() => {
-    const keys = new Set<string>();
+  const routeEdgeColors = useMemo(() => {
+    const colorByEdge = new Map<string, string>();
 
-    for (const route of routes) {
-      for (let index = 0; index < route.path.length - 1; index += 1) {
-        keys.add(edgeKey(route.path[index], route.path[index + 1]));
+    for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+      const route = routes[routeIndex];
+      const routeColor = ROUTE_COLORS[routeIndex % ROUTE_COLORS.length];
+
+      for (let edgeIndex = 0; edgeIndex < route.path.length - 1; edgeIndex += 1) {
+        const key = edgeKey(route.path[edgeIndex], route.path[edgeIndex + 1]);
+        const existing = colorByEdge.get(key);
+
+        if (!existing) {
+          colorByEdge.set(key, routeColor);
+        } else if (existing !== routeColor) {
+          colorByEdge.set(key, SHARED_ROUTE_COLOR);
+        }
       }
     }
 
-    return keys;
+    return colorByEdge;
   }, [routes]);
 
   const highlightedSlotIds = useMemo(() => {
@@ -383,6 +426,10 @@ export default function GraphCanvas() {
 
     return ids;
   }, [routes]);
+
+  const endpointSlotIds = useMemo(() => {
+    return new Set(endpoints.map((endpoint) => endpoint.slotId));
+  }, [endpoints]);
 
   const exportJson = useMemo(() => {
     const withPositions = exportGraphWithSlotPositions({
@@ -398,6 +445,108 @@ export default function GraphCanvas() {
       height: Math.max(1, bounds.maxY + 140),
     };
   }, [bounds]);
+
+  const visibleLabelIds = useMemo(() => {
+    if (editLayoutMode) {
+      return new Set(slots.map((slot) => slot.id));
+    }
+
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return new Set(slots.map((slot) => slot.id));
+    }
+
+    const lowZoom = viewport.scale < 0.95;
+    const candidates: LabelCandidate[] = [];
+
+    for (const slot of slots) {
+      const isEndpoint = endpointSlotIds.has(slot.id);
+      const isHighlighted = highlightedSlotIds.has(slot.id);
+      const keepTypeAtLowZoom = slot.node.type === 'building' || isEndpoint || isHighlighted;
+      if (lowZoom && !keepTypeAtLowZoom) {
+        continue;
+      }
+
+      const slotScreenX = worldToScreenX(slot.x, viewport);
+      const slotScreenY = worldToScreenY(slot.y, viewport);
+      const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
+      const left = slotScreenX - LABEL_WIDTH / 2;
+      const top = slotScreenY + slotRadius + 6;
+      const right = left + LABEL_WIDTH;
+      const bottom = top + LABEL_HEIGHT;
+
+      if (
+        right < -LABEL_VIEWPORT_MARGIN
+        || left > viewportSize.width + LABEL_VIEWPORT_MARGIN
+        || bottom < -LABEL_VIEWPORT_MARGIN
+        || top > viewportSize.height + LABEL_VIEWPORT_MARGIN
+      ) {
+        continue;
+      }
+
+      let priority = 0;
+      if (isEndpoint) {
+        priority += 100;
+      }
+      if (isHighlighted) {
+        priority += 60;
+      }
+      if (slot.node.type === 'building') {
+        priority += 20;
+      }
+      if (slot.node.exitOnly) {
+        priority += 5;
+      }
+
+      candidates.push({
+        id: slot.id,
+        left,
+        top,
+        right,
+        bottom,
+        priority,
+      });
+    }
+
+    candidates.sort((a, b) => {
+      if (b.priority !== a.priority) {
+        return b.priority - a.priority;
+      }
+      if (a.top !== b.top) {
+        return a.top - b.top;
+      }
+      return a.left - b.left;
+    });
+
+    const accepted: LabelCandidate[] = [];
+    const visible = new Set<string>();
+
+    for (const candidate of candidates) {
+      const collides = accepted.some((existing) => labelsOverlap(candidate, existing));
+      if (collides) {
+        continue;
+      }
+
+      accepted.push(candidate);
+      visible.add(candidate.id);
+    }
+
+    return visible;
+  }, [editLayoutMode, endpointSlotIds, highlightedSlotIds, slots, viewport, viewportSize.height, viewportSize.width]);
+
+  useEffect(() => {
+    if (viewportSize.width > 0 && viewportSize.height > 0) {
+      return;
+    }
+
+    if (windowSize.width <= 0 || windowSize.height <= 0) {
+      return;
+    }
+
+    setViewportSize({
+      width: windowSize.width,
+      height: windowSize.height,
+    });
+  }, [viewportSize.height, viewportSize.width, windowSize.height, windowSize.width]);
 
   const gridModel = useMemo(() => {
     if (!editLayoutMode) {
@@ -459,13 +608,18 @@ export default function GraphCanvas() {
     setViewportClamped(unclamped);
   };
 
+  const getPreferredFocusScale = (): number => {
+    const preferred = Math.max(zoomLimits.minScale * 2.8, 0.72);
+    return clampScalar(preferred, zoomLimits.minScale, zoomLimits.maxScale);
+  };
+
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0 || slots.length === 0 || initializedRef.current) {
       return;
     }
 
     initializedRef.current = true;
-    const startScale = clampScalar(zoomLimits.minScale * 1.35, zoomLimits.minScale, zoomLimits.maxScale);
+    const startScale = getPreferredFocusScale();
     setViewport(() => {
       const slot = slotById.get(DEFAULT_CENTER_SLOT_ID) ?? slots[0];
       const centered: Viewport = {
@@ -852,13 +1006,17 @@ export default function GraphCanvas() {
       const worldY = screenToWorldY(touch.y, currentViewport);
       const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
       const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
+      const deleteCenterX = viewportSizeRef.current.width - (DELETE_TARGET_MARGIN + DELETE_TARGET_SIZE / 2);
+      const deleteCenterY = viewportSizeRef.current.height - (12 + bottomInset + DELETE_TARGET_SIZE / 2);
+      const deleteRadius = DELETE_TARGET_SIZE * 0.62;
+      const overDeleteZone = distance(touch.x, touch.y, deleteCenterX, deleteCenterY) <= deleteRadius;
 
       const nextDrag: DraggingEndpointState = {
         endpointId: currentInteraction.endpointId,
         worldX,
         worldY,
-        overDeleteZone: touch.y >= viewportSizeRef.current.height - DELETE_ZONE_HEIGHT,
-        targetSlotId: slotHit?.slot.id ?? null,
+        overDeleteZone,
+        targetSlotId: overDeleteZone ? null : (slotHit?.slot.id ?? null),
       };
 
       setDraggingEndpoint(nextDrag);
@@ -1019,7 +1177,9 @@ export default function GraphCanvas() {
 
   return (
     <Animated.View style={[styles.screen, { transform: [{ translateX: shakeX }] }]}>
-      <View style={styles.header}>
+      <SafeAreaView style={styles.screen}>
+      <StatusBar barStyle="light-content" translucent={false} backgroundColor="#121a26" />
+      <View style={[styles.header, { paddingTop: 14 + topInset }]}>
         <View style={styles.headerLeft}>
           <Text style={styles.title}>Tunnel Navigator</Text>
           <Text style={styles.subtitle}>
@@ -1043,7 +1203,7 @@ export default function GraphCanvas() {
 
           {editLayoutMode ? (
             <Pressable
-              style={styles.headerButton}
+              style={[styles.headerButton, styles.headerButtonSpacer]}
               onPress={() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length)}
             >
               <Text style={styles.headerButtonText}>Grid {gridSize}</Text>
@@ -1051,7 +1211,7 @@ export default function GraphCanvas() {
           ) : null}
 
           {editLayoutMode ? (
-            <Pressable style={styles.headerButton} onPress={() => setExportVisible(true)}>
+            <Pressable style={[styles.headerButton, styles.headerButtonSpacer]} onPress={() => setExportVisible(true)}>
               <Text style={styles.headerButtonText}>Export</Text>
             </Pressable>
           ) : null}
@@ -1075,22 +1235,7 @@ export default function GraphCanvas() {
       >
         <View style={styles.canvasBackdrop} />
 
-        <View
-          pointerEvents="none"
-          style={[
-            styles.world,
-            {
-              width: worldSize.width,
-              height: worldSize.height,
-              transform: [
-                { translateX: viewport.tx },
-                { translateY: viewport.ty },
-                { scale: viewport.scale },
-              ],
-              ...(Platform.OS === 'web' ? ({ transformOrigin: '0px 0px' } as const) : null),
-            },
-          ]}
-        >
+        <View pointerEvents="none" style={styles.sceneLayer}>
           {editLayoutMode ? (
             <>
               {gridModel.xValues.map((x) => (
@@ -1099,9 +1244,9 @@ export default function GraphCanvas() {
                   style={[
                     styles.gridLineVertical,
                     {
-                      left: x,
-                      top: gridModel.minY,
-                      height: Math.max(1, gridModel.maxY - gridModel.minY),
+                      left: worldToScreenX(x, viewport),
+                      top: worldToScreenY(gridModel.minY, viewport),
+                      height: Math.max(1, (gridModel.maxY - gridModel.minY) * viewport.scale),
                     },
                   ]}
                 />
@@ -1112,9 +1257,9 @@ export default function GraphCanvas() {
                   style={[
                     styles.gridLineHorizontal,
                     {
-                      top: y,
-                      left: gridModel.minX,
-                      width: Math.max(1, gridModel.maxX - gridModel.minX),
+                      top: worldToScreenY(y, viewport),
+                      left: worldToScreenX(gridModel.minX, viewport),
+                      width: Math.max(1, (gridModel.maxX - gridModel.minX) * viewport.scale),
                     },
                   ]}
                 />
@@ -1127,8 +1272,8 @@ export default function GraphCanvas() {
                       style={[
                         styles.gridIntersection,
                         {
-                          left: x - 1.5,
-                          top: y - 1.5,
+                          left: worldToScreenX(x, viewport) - 1.5,
+                          top: worldToScreenY(y, viewport) - 1.5,
                         },
                       ]}
                     />
@@ -1139,12 +1284,17 @@ export default function GraphCanvas() {
           ) : null}
 
           {edges.map((edge, index) => {
-            const isHighlighted = highlightedEdgeKeys.has(edgeKey(edge.from, edge.to));
+            const routeColor = routeEdgeColors.get(edgeKey(edge.from, edge.to));
+            const isHighlighted = Boolean(routeColor);
             const segments = getEdgeSegments(edge, slotById);
 
             return segments.map((segment, segmentIndex) => {
-              const dx = segment.x2 - segment.x1;
-              const dy = segment.y2 - segment.y1;
+              const x1 = worldToScreenX(segment.x1, viewport);
+              const y1 = worldToScreenY(segment.y1, viewport);
+              const x2 = worldToScreenX(segment.x2, viewport);
+              const y2 = worldToScreenY(segment.y2, viewport);
+              const dx = x2 - x1;
+              const dy = y2 - y1;
               const length = Math.sqrt(dx * dx + dy * dy);
               if (length <= 0.001) {
                 return null;
@@ -1158,11 +1308,11 @@ export default function GraphCanvas() {
                   style={[
                     styles.edge,
                     {
-                      left: (segment.x1 + segment.x2) / 2 - length / 2,
-                      top: (segment.y1 + segment.y2) / 2 - (isHighlighted ? 2 : 1),
+                      left: (x1 + x2) / 2 - length / 2,
+                      top: (y1 + y2) / 2 - (isHighlighted ? 2 : 1),
                       width: length,
                       height: isHighlighted ? 4 : 2,
-                      backgroundColor: isHighlighted ? '#f7f7f7' : (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
+                      backgroundColor: routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
                       opacity: isHighlighted ? 1 : 0.84,
                       transform: [{ rotate: `${angle}rad` }],
                     },
@@ -1176,22 +1326,42 @@ export default function GraphCanvas() {
             const highlighted = highlightedSlotIds.has(slot.id);
             const isDropTarget = dropPreviewSlotId === slot.id;
             const isExitOnly = slot.node.exitOnly;
+            const slotScreenX = worldToScreenX(slot.x, viewport);
+            const slotScreenY = worldToScreenY(slot.y, viewport);
+            const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
 
             return (
-              <View key={slot.id} style={[styles.slotWrap, { left: slot.x - SLOT_RADIUS, top: slot.y - SLOT_RADIUS }]}>
+              <View
+                key={slot.id}
+                style={[
+                  styles.slotWrap,
+                  {
+                    left: slotScreenX - slotRadius,
+                    top: slotScreenY - slotRadius,
+                    width: slotRadius * 2,
+                  },
+                ]}
+              >
                 <View
                   style={[
                     styles.slot,
+                    {
+                      width: slotRadius * 2,
+                      height: slotRadius * 2,
+                      borderRadius: slotRadius,
+                    },
                     { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
                     isExitOnly ? styles.slotExitOnly : null,
                     highlighted ? styles.slotHighlighted : null,
                     isDropTarget ? styles.slotDropPreview : null,
                   ]}
                 />
-                <Text numberOfLines={editLayoutMode ? 3 : 2} style={styles.slotLabel}>
-                  {slot.node.label}
-                  {editLayoutMode ? `\n${Math.round(slot.x)}, ${Math.round(slot.y)}` : ''}
-                </Text>
+                {visibleLabelIds.has(slot.id) ? (
+                  <Text numberOfLines={editLayoutMode ? 3 : 2} style={styles.slotLabel}>
+                    {slot.node.label}
+                    {editLayoutMode ? `\n${Math.round(slot.x)}, ${Math.round(slot.y)}` : ''}
+                  </Text>
+                ) : null}
               </View>
             );
           })}
@@ -1206,6 +1376,9 @@ export default function GraphCanvas() {
             const x = drag ? drag.worldX : baseSlot.x;
             const y = drag ? drag.worldY : baseSlot.y;
             const isStart = endpoint.id === 'start';
+            const endpointScreenX = worldToScreenX(x, viewport);
+            const endpointScreenY = worldToScreenY(y, viewport);
+            const endpointRadius = clamp(ENDPOINT_RADIUS * viewport.scale, 11, 40);
 
             return (
               <View
@@ -1213,14 +1386,26 @@ export default function GraphCanvas() {
                 style={[
                   styles.endpointWrap,
                   {
-                    left: x - ENDPOINT_RADIUS,
-                    top: y - ENDPOINT_RADIUS,
+                    left: endpointScreenX - endpointRadius,
+                    top: endpointScreenY - endpointRadius,
+                    width: endpointRadius * 2,
+                    height: endpointRadius * 2,
                     opacity: drag ? 0.94 : 1,
                     transform: [{ scale: drag ? 1.07 : 1 }],
                   },
                 ]}
               >
-                <View style={[styles.endpoint, isStart ? styles.endpointStart : styles.endpointEnd]}>
+                <View
+                  style={[
+                    styles.endpoint,
+                    {
+                      width: endpointRadius * 2,
+                      height: endpointRadius * 2,
+                      borderRadius: endpointRadius,
+                    },
+                    isStart ? styles.endpointStart : styles.endpointEnd,
+                  ]}
+                >
                   <Text style={styles.endpointText}>{isStart ? 'A' : 'B'}</Text>
                 </View>
               </View>
@@ -1229,42 +1414,56 @@ export default function GraphCanvas() {
         </View>
 
         {blockedMessage ? (
-          <View style={styles.blockedToast}>
+          <View pointerEvents="none" style={styles.blockedToast}>
             <Text style={styles.blockedToastText}>{blockedMessage}</Text>
           </View>
         ) : null}
 
         {draggingEndpoint ? (
           <View
+            pointerEvents="none"
             style={[
               styles.deleteZone,
+              { bottom: 12 + bottomInset },
               draggingEndpoint.overDeleteZone ? styles.deleteZoneActive : null,
             ]}
           >
-            <Text style={styles.deleteZoneText}>Release here to delete endpoint</Text>
+            <Text style={styles.deleteZoneText}>DELETE</Text>
           </View>
         ) : null}
 
-        <View style={styles.zoomControls}>
-          <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(1.16)}>
-            <Text style={styles.zoomButtonText}>+</Text>
-          </Pressable>
-          <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(0.86)}>
-            <Text style={styles.zoomButtonText}>-</Text>
-          </Pressable>
+        <View style={[styles.zoomControls, { bottom: 10 + bottomInset }]}>
+          {Platform.OS === 'web' ? (
+            <>
+              <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(1.16)}>
+                <Text style={styles.zoomButtonText}>+</Text>
+              </Pressable>
+              <Pressable style={[styles.zoomButton, styles.zoomButtonSpacer]} onPress={() => zoomByFactor(0.86)}>
+                <Text style={styles.zoomButtonText}>-</Text>
+              </Pressable>
+            </>
+          ) : null}
           <Pressable
-            style={styles.zoomButton}
+            style={[styles.zoomButton, Platform.OS === 'web' ? styles.zoomButtonSpacer : null]}
             onPress={() => {
-              centerOnSlot(DEFAULT_CENTER_SLOT_ID, clampScalar(zoomLimits.minScale * 1.35, zoomLimits.minScale, zoomLimits.maxScale));
+              centerOnSlot(DEFAULT_CENTER_SLOT_ID, getPreferredFocusScale());
             }}
           >
             <Text style={styles.zoomButtonText}>C</Text>
           </Pressable>
         </View>
+
+        {__DEV__ ? (
+          <View pointerEvents="none" style={styles.debugPill}>
+            <Text style={styles.debugPillText}>
+              {`slots:${slots.length} scale:${viewport.scale.toFixed(2)} tx:${Math.round(viewport.tx)} ty:${Math.round(viewport.ty)} view:${Math.round(viewportSize.width)}x${Math.round(viewportSize.height)}`}
+            </Text>
+          </View>
+        ) : null}
       </View>
 
       {routes.length > 0 ? (
-        <View style={styles.routeInfoBar}>
+        <View style={[styles.routeInfoBar, { paddingBottom: 18 + bottomInset }]}>
           <Text style={styles.routeInfoText}>
             Distance: {routes[0].distance}  |  Equal shortest paths: {routes.length}
           </Text>
@@ -1283,9 +1482,9 @@ export default function GraphCanvas() {
             {selectedEdge ? (
               <>
                 <Text style={styles.edgeEditorMeta}>{`${selectedEdge.from} -> ${selectedEdge.to}`}</Text>
-                <Text style={styles.edgeEditorMeta}>Type: {selectedEdge.type}</Text>
+                <Text style={[styles.edgeEditorMeta, styles.edgeEditorMetaSpacing]}>Type: {selectedEdge.type}</Text>
 
-                <View style={styles.edgeEditorRow}>
+                <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
                   <Text style={styles.edgeEditorLabel}>Weight</Text>
                   <View style={styles.edgeEditorStepper}>
                     <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(-1)}>
@@ -1298,7 +1497,7 @@ export default function GraphCanvas() {
                   </View>
                 </View>
 
-                <View style={styles.edgeEditorRow}>
+                <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
                   <Text style={styles.edgeEditorLabel}>Mode</Text>
                   <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeMode}>
                     <Text style={styles.edgeEditorActionBtnText}>
@@ -1308,7 +1507,7 @@ export default function GraphCanvas() {
                 </View>
 
                 {(selectedEdge.render?.mode ?? 'straight') === 'orthogonal' ? (
-                  <View style={styles.edgeEditorRow}>
+                  <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
                     <Text style={styles.edgeEditorLabel}>Bend</Text>
                     <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeBend}>
                       <Text style={styles.edgeEditorActionBtnText}>{getEdgeBendMode(selectedEdge)}</Text>
@@ -1342,6 +1541,7 @@ export default function GraphCanvas() {
           </ScrollView>
         </View>
       </Modal>
+      </SafeAreaView>
     </Animated.View>
   );
 }
@@ -1361,7 +1561,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 10,
   },
   headerLeft: {
     flex: 1,
@@ -1381,7 +1580,9 @@ const styles = StyleSheet.create({
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+  },
+  headerButtonSpacer: {
+    marginLeft: 8,
   },
   headerButton: {
     paddingHorizontal: 11,
@@ -1411,10 +1612,8 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     backgroundColor: '#0e1724',
   },
-  world: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
+  sceneLayer: {
+    ...StyleSheet.absoluteFillObject,
   },
   edge: {
     position: 'absolute',
@@ -1522,14 +1721,14 @@ const styles = StyleSheet.create({
   },
   deleteZone: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    right: DELETE_TARGET_MARGIN,
     bottom: 12,
-    height: DELETE_ZONE_HEIGHT,
-    borderRadius: 18,
+    width: DELETE_TARGET_SIZE,
+    height: DELETE_TARGET_SIZE,
+    borderRadius: DELETE_TARGET_SIZE / 2,
     borderWidth: 2,
     borderColor: '#8f4655',
-    backgroundColor: 'rgba(88, 30, 44, 0.78)',
+    backgroundColor: 'rgba(88, 30, 44, 0.62)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1539,14 +1738,17 @@ const styles = StyleSheet.create({
   },
   deleteZoneText: {
     color: '#ffd5de',
-    fontWeight: '700',
-    fontSize: 14,
+    fontWeight: '800',
+    fontSize: 10,
+    letterSpacing: 0.9,
   },
   zoomControls: {
     position: 'absolute',
     right: 10,
     bottom: 10,
-    gap: 8,
+  },
+  zoomButtonSpacer: {
+    marginTop: 8,
   },
   zoomButton: {
     width: 42,
@@ -1576,6 +1778,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'center',
   },
+  debugPill: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    bottom: 10,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(6, 11, 19, 0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(127, 156, 196, 0.42)',
+  },
+  debugPillText: {
+    color: '#9fbbe3',
+    fontSize: 10,
+    textAlign: 'center',
+  },
   edgeEditorOverlay: {
     flex: 1,
     backgroundColor: 'rgba(6, 10, 16, 0.5)',
@@ -1592,7 +1811,6 @@ const styles = StyleSheet.create({
     borderColor: '#2a3f5e',
     paddingHorizontal: 14,
     paddingVertical: 14,
-    gap: 10,
   },
   edgeEditorTitle: {
     color: '#eef5ff',
@@ -1603,10 +1821,16 @@ const styles = StyleSheet.create({
     color: '#a4b7d5',
     fontSize: 11,
   },
+  edgeEditorMetaSpacing: {
+    marginTop: 2,
+  },
   edgeEditorRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  edgeEditorRowSpacing: {
+    marginTop: 10,
   },
   edgeEditorLabel: {
     color: '#d6e4fa',
@@ -1616,7 +1840,6 @@ const styles = StyleSheet.create({
   edgeEditorStepper: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
   },
   edgeEditorSmallBtn: {
     width: 32,
@@ -1636,6 +1859,7 @@ const styles = StyleSheet.create({
   },
   edgeEditorValue: {
     width: 28,
+    marginHorizontal: 8,
     color: '#e4efff',
     textAlign: 'center',
     fontSize: 15,
