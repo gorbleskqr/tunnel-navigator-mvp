@@ -41,9 +41,13 @@ const TAP_RADIUS_PX = 26;
 const DRAG_RADIUS_PX = 28;
 const SNAP_RADIUS_PX = 36;
 const TAP_MOVE_THRESHOLD = 8;
-const DELETE_ZONE_HEIGHT = 104;
+const DELETE_TARGET_SIZE = 78;
+const DELETE_TARGET_MARGIN = 12;
 const DEFAULT_CENTER_SLOT_ID = 'nicol_building';
 const GRID_SIZE_OPTIONS = [40, 80, 120] as const;
+const LABEL_WIDTH = 132;
+const LABEL_HEIGHT = 26;
+const LABEL_VIEWPORT_MARGIN = 20;
 
 const NODE_TYPE_COLORS: Record<string, string> = {
   building: '#3f96ff',
@@ -58,6 +62,9 @@ const EDGE_TYPE_COLORS: Record<string, string> = {
   ramp: '#f2a33a',
   stairs: '#db5b5b',
 };
+
+const ROUTE_COLORS = ['#7fc7ff', '#8de4b8', '#ffd27a', '#ff9fab', '#b8b2ff', '#7ee7e1'] as const;
+const SHARED_ROUTE_COLOR = '#f2f6ff';
 
 type InteractionState =
   | { kind: 'idle' }
@@ -107,6 +114,15 @@ interface EdgeSegment {
   y1: number;
   x2: number;
   y2: number;
+}
+
+interface LabelCandidate {
+  id: string;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  priority: number;
 }
 
 function approxEqual(a: number, b: number): boolean {
@@ -202,6 +218,15 @@ function distanceBetweenTouches(a: TouchPoint, b: TouchPoint): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+function labelsOverlap(a: LabelCandidate, b: LabelCandidate): boolean {
+  return !(
+    a.right < b.left - 8
+    || a.left > b.right + 8
+    || a.bottom < b.top - 4
+    || a.top > b.bottom + 4
+  );
 }
 
 function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
@@ -368,16 +393,26 @@ export default function GraphCanvas() {
     return getRoutes(ordered[0].slotId, ordered[1].slotId, adjacency);
   }, [adjacency, endpoints]);
 
-  const highlightedEdgeKeys = useMemo(() => {
-    const keys = new Set<string>();
+  const routeEdgeColors = useMemo(() => {
+    const colorByEdge = new Map<string, string>();
 
-    for (const route of routes) {
-      for (let index = 0; index < route.path.length - 1; index += 1) {
-        keys.add(edgeKey(route.path[index], route.path[index + 1]));
+    for (let routeIndex = 0; routeIndex < routes.length; routeIndex += 1) {
+      const route = routes[routeIndex];
+      const routeColor = ROUTE_COLORS[routeIndex % ROUTE_COLORS.length];
+
+      for (let edgeIndex = 0; edgeIndex < route.path.length - 1; edgeIndex += 1) {
+        const key = edgeKey(route.path[edgeIndex], route.path[edgeIndex + 1]);
+        const existing = colorByEdge.get(key);
+
+        if (!existing) {
+          colorByEdge.set(key, routeColor);
+        } else if (existing !== routeColor) {
+          colorByEdge.set(key, SHARED_ROUTE_COLOR);
+        }
       }
     }
 
-    return keys;
+    return colorByEdge;
   }, [routes]);
 
   const highlightedSlotIds = useMemo(() => {
@@ -391,6 +426,10 @@ export default function GraphCanvas() {
 
     return ids;
   }, [routes]);
+
+  const endpointSlotIds = useMemo(() => {
+    return new Set(endpoints.map((endpoint) => endpoint.slotId));
+  }, [endpoints]);
 
   const exportJson = useMemo(() => {
     const withPositions = exportGraphWithSlotPositions({
@@ -406,6 +445,93 @@ export default function GraphCanvas() {
       height: Math.max(1, bounds.maxY + 140),
     };
   }, [bounds]);
+
+  const visibleLabelIds = useMemo(() => {
+    if (editLayoutMode) {
+      return new Set(slots.map((slot) => slot.id));
+    }
+
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return new Set(slots.map((slot) => slot.id));
+    }
+
+    const lowZoom = viewport.scale < 0.95;
+    const candidates: LabelCandidate[] = [];
+
+    for (const slot of slots) {
+      const isEndpoint = endpointSlotIds.has(slot.id);
+      const isHighlighted = highlightedSlotIds.has(slot.id);
+      const keepTypeAtLowZoom = slot.node.type === 'building' || isEndpoint || isHighlighted;
+      if (lowZoom && !keepTypeAtLowZoom) {
+        continue;
+      }
+
+      const slotScreenX = worldToScreenX(slot.x, viewport);
+      const slotScreenY = worldToScreenY(slot.y, viewport);
+      const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
+      const left = slotScreenX - LABEL_WIDTH / 2;
+      const top = slotScreenY + slotRadius + 6;
+      const right = left + LABEL_WIDTH;
+      const bottom = top + LABEL_HEIGHT;
+
+      if (
+        right < -LABEL_VIEWPORT_MARGIN
+        || left > viewportSize.width + LABEL_VIEWPORT_MARGIN
+        || bottom < -LABEL_VIEWPORT_MARGIN
+        || top > viewportSize.height + LABEL_VIEWPORT_MARGIN
+      ) {
+        continue;
+      }
+
+      let priority = 0;
+      if (isEndpoint) {
+        priority += 100;
+      }
+      if (isHighlighted) {
+        priority += 60;
+      }
+      if (slot.node.type === 'building') {
+        priority += 20;
+      }
+      if (slot.node.exitOnly) {
+        priority += 5;
+      }
+
+      candidates.push({
+        id: slot.id,
+        left,
+        top,
+        right,
+        bottom,
+        priority,
+      });
+    }
+
+    candidates.sort((a, b) => {
+      if (b.priority !== a.priority) {
+        return b.priority - a.priority;
+      }
+      if (a.top !== b.top) {
+        return a.top - b.top;
+      }
+      return a.left - b.left;
+    });
+
+    const accepted: LabelCandidate[] = [];
+    const visible = new Set<string>();
+
+    for (const candidate of candidates) {
+      const collides = accepted.some((existing) => labelsOverlap(candidate, existing));
+      if (collides) {
+        continue;
+      }
+
+      accepted.push(candidate);
+      visible.add(candidate.id);
+    }
+
+    return visible;
+  }, [editLayoutMode, endpointSlotIds, highlightedSlotIds, slots, viewport, viewportSize.height, viewportSize.width]);
 
   useEffect(() => {
     if (viewportSize.width > 0 && viewportSize.height > 0) {
@@ -880,14 +1006,17 @@ export default function GraphCanvas() {
       const worldY = screenToWorldY(touch.y, currentViewport);
       const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
       const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
-      const deleteZoneTop = viewportSizeRef.current.height - (DELETE_ZONE_HEIGHT + 12 + bottomInset);
+      const deleteCenterX = viewportSizeRef.current.width - (DELETE_TARGET_MARGIN + DELETE_TARGET_SIZE / 2);
+      const deleteCenterY = viewportSizeRef.current.height - (12 + bottomInset + DELETE_TARGET_SIZE / 2);
+      const deleteRadius = DELETE_TARGET_SIZE * 0.62;
+      const overDeleteZone = distance(touch.x, touch.y, deleteCenterX, deleteCenterY) <= deleteRadius;
 
       const nextDrag: DraggingEndpointState = {
         endpointId: currentInteraction.endpointId,
         worldX,
         worldY,
-        overDeleteZone: touch.y >= deleteZoneTop,
-        targetSlotId: slotHit?.slot.id ?? null,
+        overDeleteZone,
+        targetSlotId: overDeleteZone ? null : (slotHit?.slot.id ?? null),
       };
 
       setDraggingEndpoint(nextDrag);
@@ -1155,7 +1284,8 @@ export default function GraphCanvas() {
           ) : null}
 
           {edges.map((edge, index) => {
-            const isHighlighted = highlightedEdgeKeys.has(edgeKey(edge.from, edge.to));
+            const routeColor = routeEdgeColors.get(edgeKey(edge.from, edge.to));
+            const isHighlighted = Boolean(routeColor);
             const segments = getEdgeSegments(edge, slotById);
 
             return segments.map((segment, segmentIndex) => {
@@ -1182,7 +1312,7 @@ export default function GraphCanvas() {
                       top: (y1 + y2) / 2 - (isHighlighted ? 2 : 1),
                       width: length,
                       height: isHighlighted ? 4 : 2,
-                      backgroundColor: isHighlighted ? '#f7f7f7' : (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
+                      backgroundColor: routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
                       opacity: isHighlighted ? 1 : 0.84,
                       transform: [{ rotate: `${angle}rad` }],
                     },
@@ -1226,10 +1356,12 @@ export default function GraphCanvas() {
                     isDropTarget ? styles.slotDropPreview : null,
                   ]}
                 />
-                <Text numberOfLines={editLayoutMode ? 3 : 2} style={styles.slotLabel}>
-                  {slot.node.label}
-                  {editLayoutMode ? `\n${Math.round(slot.x)}, ${Math.round(slot.y)}` : ''}
-                </Text>
+                {visibleLabelIds.has(slot.id) ? (
+                  <Text numberOfLines={editLayoutMode ? 3 : 2} style={styles.slotLabel}>
+                    {slot.node.label}
+                    {editLayoutMode ? `\n${Math.round(slot.x)}, ${Math.round(slot.y)}` : ''}
+                  </Text>
+                ) : null}
               </View>
             );
           })}
@@ -1296,7 +1428,7 @@ export default function GraphCanvas() {
               draggingEndpoint.overDeleteZone ? styles.deleteZoneActive : null,
             ]}
           >
-            <Text style={styles.deleteZoneText}>Release here to delete endpoint</Text>
+            <Text style={styles.deleteZoneText}>DELETE</Text>
           </View>
         ) : null}
 
@@ -1589,14 +1721,14 @@ const styles = StyleSheet.create({
   },
   deleteZone: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    right: DELETE_TARGET_MARGIN,
     bottom: 12,
-    height: DELETE_ZONE_HEIGHT,
-    borderRadius: 18,
+    width: DELETE_TARGET_SIZE,
+    height: DELETE_TARGET_SIZE,
+    borderRadius: DELETE_TARGET_SIZE / 2,
     borderWidth: 2,
     borderColor: '#8f4655',
-    backgroundColor: 'rgba(88, 30, 44, 0.78)',
+    backgroundColor: 'rgba(88, 30, 44, 0.62)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1606,8 +1738,9 @@ const styles = StyleSheet.create({
   },
   deleteZoneText: {
     color: '#ffd5de',
-    fontWeight: '700',
-    fontSize: 14,
+    fontWeight: '800',
+    fontSize: 10,
+    letterSpacing: 0.9,
   },
   zoomControls: {
     position: 'absolute',
