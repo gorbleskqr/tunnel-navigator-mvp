@@ -1,5 +1,7 @@
 export type NodeType = 'building' | 'junction' | 'intersection' | 'stairs' | 'exterior';
 export type EdgeType = 'flat' | 'ramp' | 'stairs';
+export type EdgeRenderMode = 'straight' | 'orthogonal';
+export type EdgeBendMode = 'hv' | 'vh';
 
 export interface Alias {
   label: string;
@@ -21,6 +23,11 @@ export interface Edge {
   to: string;
   weight: number;
   type: EdgeType;
+  render?: {
+    mode: EdgeRenderMode;
+    bend?: EdgeBendMode;
+    waypoints?: Array<{ x: number; y: number }>;
+  };
 }
 
 export interface Graph {
