@@ -42,3 +42,7 @@ yarn-error.*
 
 # WebStorm
 .idea/
+
+# local workflow docs
+CONTRIBUTING.md
+PR_NOTES.md
