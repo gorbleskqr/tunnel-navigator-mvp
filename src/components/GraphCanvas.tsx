@@ -997,6 +997,7 @@ export default function GraphCanvas() {
           {slots.map((slot) => {
             const highlighted = highlightedSlotIds.has(slot.id);
             const isDropTarget = dropPreviewSlotId === slot.id;
+            const isExitOnly = slot.node.exitOnly;
 
             return (
               <View key={slot.id} style={[styles.slotWrap, { left: slot.x - SLOT_RADIUS, top: slot.y - SLOT_RADIUS }]}>
@@ -1004,17 +1005,15 @@ export default function GraphCanvas() {
                   style={[
                     styles.slot,
                     { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
+                    isExitOnly ? styles.slotExitOnly : null,
                     highlighted ? styles.slotHighlighted : null,
                     isDropTarget ? styles.slotDropPreview : null,
                   ]}
                 />
-                {editLayoutMode ? (
-                  <Text numberOfLines={3} style={styles.slotLabel}>
-                    {slot.node.label}
-                    {'\n'}
-                    {Math.round(slot.x)}, {Math.round(slot.y)}
-                  </Text>
-                ) : null}
+                <Text numberOfLines={editLayoutMode ? 3 : 2} style={styles.slotLabel}>
+                  {slot.node.label}
+                  {editLayoutMode ? `\n${Math.round(slot.x)}, ${Math.round(slot.y)}` : ''}
+                </Text>
               </View>
             );
           })}
@@ -1221,6 +1220,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowOffset: { width: 0, height: 3 },
     shadowRadius: 4,
+  },
+  slotExitOnly: {
+    borderStyle: 'dashed',
+    borderColor: '#ffbe70',
+    backgroundColor: '#2f2415',
   },
   slotHighlighted: {
     borderColor: '#ffffff',
