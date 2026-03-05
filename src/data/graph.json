@@ -6,11 +6,25 @@
       "type": "building",
       "exitOnly": false,
       "aliases": [
-        { "label": "VSIM", "type": "building" },
-        { "label": "HCI", "type": "building" },
-        { "label": "SSRB", "type": "building" },
-        { "label": "P8", "type": "exterior" }
-      ]
+        {
+          "label": "VSIM",
+          "type": "building"
+        },
+        {
+          "label": "HCI",
+          "type": "building"
+        },
+        {
+          "label": "SSRB",
+          "type": "building"
+        },
+        {
+          "label": "P8",
+          "type": "exterior"
+        }
+      ],
+      "x": 720,
+      "y": 880
     },
     {
       "id": "junction1",
@@ -18,10 +32,26 @@
       "type": "junction",
       "exitOnly": false,
       "aliases": [
-        { "label": "Southam Hall (Entrance A)", "type": "building" },
-        { "label": "Southam Hall (Entrance B)", "type": "building" },
-        { "label": "Kailash Mital Theatre", "type": "building" }
-      ]
+        {
+          "label": "Southam Hall (Entrance A)",
+          "type": "building"
+        },
+        {
+          "label": "Kailash Mital Theatre",
+          "type": "building"
+        }
+      ],
+      "x": 720,
+      "y": 720
+    },
+    {
+      "id": "southam_hall",
+      "label": "Southam Hall (Entrance B)",
+      "type": "building",
+      "exitOnly": false,
+      "aliases": [],
+      "x": 720,
+      "y": 560
     },
     {
       "id": "junction2",
@@ -29,100 +59,134 @@
       "type": "junction",
       "exitOnly": false,
       "aliases": [
-        { "label": "P1", "type": "exterior" },
-        { "label": "ML", "type": "exterior" }
-      ]
+        {
+          "label": "P1",
+          "type": "exterior"
+        },
+        {
+          "label": "ML",
+          "type": "exterior"
+        }
+      ],
+      "x": 800,
+      "y": 560
     },
     {
       "id": "stage_exits",
       "label": "Stage Exits",
       "type": "building",
       "exitOnly": true,
-      "aliases": []
+      "aliases": [],
+      "x": 880,
+      "y": 560
     },
     {
       "id": "intersection",
       "label": "Intersection",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1040,
+      "y": 560
     },
     {
       "id": "intersection2",
       "label": "Intersection 2",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1280,
+      "y": 400
     },
     {
       "id": "intersection3",
       "label": "Intersection 3",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1360,
+      "y": 560
     },
     {
       "id": "intersection4",
       "label": "Intersection 4",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1440,
+      "y": 720
     },
     {
       "id": "intersection5",
       "label": "Intersection 5",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1520,
+      "y": 720
     },
     {
       "id": "arise",
       "label": "Arise",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 880,
+      "y": 880
     },
     {
       "id": "paterson_hall",
       "label": "Paterson Hall",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1200,
+      "y": 560
     },
     {
       "id": "macodrum_library",
       "label": "MacOdrum Library",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1040,
+      "y": 400
     },
     {
       "id": "dunton_tower",
       "label": "Dunton Tower",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1120,
+      "y": 400
     },
     {
       "id": "azrieli_pavilion",
       "label": "Azrieli Pavilion",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1200,
+      "y": 400
     },
     {
       "id": "azrieli_theatre",
       "label": "Azrieli Theatre",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1360,
+      "y": 320
     },
     {
       "id": "tory_building_a",
       "label": "Tory Building (Entrance A)",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1360,
+      "y": 480
     },
     {
       "id": "tory_building_b",
@@ -130,22 +194,31 @@
       "type": "building",
       "exitOnly": false,
       "aliases": [
-        { "label": "University Centre (Entrance B)", "type": "building" }
-      ]
+        {
+          "label": "University Centre (Entrance B)",
+          "type": "building"
+        }
+      ],
+      "x": 1440,
+      "y": 320
     },
     {
-      "id": "university_centre_a",
-      "label": "University Centre (Entrance A)",
+      "id": "university_centre",
+      "label": "University Centre",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1520,
+      "y": 400
     },
     {
       "id": "university_centre_stairs",
       "label": "University Centre (Stairs)",
       "type": "stairs",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1600,
+      "y": 400
     },
     {
       "id": "richcraft_hall",
@@ -153,22 +226,31 @@
       "type": "building",
       "exitOnly": false,
       "aliases": [
-        { "label": "P16", "type": "exterior" }
-      ]
+        {
+          "label": "P16",
+          "type": "exterior"
+        }
+      ],
+      "x": 1680,
+      "y": 880
     },
     {
-      "id": "steacie_building_a",
+      "id": "steacie_building",
       "label": "Steacie Building (Entrance A)",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1680,
+      "y": 800
     },
     {
       "id": "herzberg_laboratories",
       "label": "Herzberg Laboratories",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1520,
+      "y": 800
     },
     {
       "id": "junction3",
@@ -176,37 +258,53 @@
       "type": "junction",
       "exitOnly": false,
       "aliases": [
-        { "label": "Steacie Building (Entrance B)", "type": "building" },
-        { "label": "Health Sciences Building", "type": "building" }
-      ]
+        {
+          "label": "Steacie Building (Entrance B)",
+          "type": "building"
+        },
+        {
+          "label": "Health Sciences Building",
+          "type": "building"
+        }
+      ],
+      "x": 1520,
+      "y": 640
     },
     {
       "id": "architecture_building",
       "label": "Architecture Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1680,
+      "y": 400
     },
     {
       "id": "canal_building",
       "label": "Canal Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1680,
+      "y": 240
     },
     {
       "id": "mackenzie_building_stairs",
       "label": "Mackenzie Building (Stairs)",
       "type": "stairs",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1600,
+      "y": 240
     },
     {
       "id": "nicol_building",
       "label": "Nicol Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1760,
+      "y": 400
     },
     {
       "id": "junction4",
@@ -214,9 +312,17 @@
       "type": "junction",
       "exitOnly": false,
       "aliases": [
-        { "label": "Mackenzie Building (Entrance A)", "type": "building" },
-        { "label": "Minto Case", "type": "building" }
-      ]
+        {
+          "label": "Mackenzie Building (Entrance A)",
+          "type": "building"
+        },
+        {
+          "label": "Minto Case",
+          "type": "building"
+        }
+      ],
+      "x": 1760,
+      "y": 320
     },
     {
       "id": "residence_commons",
@@ -224,22 +330,31 @@
       "type": "building",
       "exitOnly": false,
       "aliases": [
-        { "label": "P17", "type": "exterior" }
-      ]
+        {
+          "label": "P17",
+          "type": "exterior"
+        }
+      ],
+      "x": 1760,
+      "y": 240
     },
     {
       "id": "st_patricks_building",
       "label": "St. Patrick's Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1760,
+      "y": 0
     },
     {
       "id": "maintenance_building",
       "label": "Maintenance Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1920,
+      "y": 400
     },
     {
       "id": "junction5",
@@ -247,11 +362,25 @@
       "type": "junction",
       "exitOnly": false,
       "aliases": [
-        { "label": "Athletics", "type": "building" },
-        { "label": "Alumni Hall", "type": "building" },
-        { "label": "Fieldhouse", "type": "building" },
-        { "label": "Ice House", "type": "building" }
-      ]
+        {
+          "label": "Athletics",
+          "type": "building"
+        },
+        {
+          "label": "Alumni Hall",
+          "type": "building"
+        },
+        {
+          "label": "Fieldhouse",
+          "type": "building"
+        },
+        {
+          "label": "Ice House",
+          "type": "building"
+        }
+      ],
+      "x": 2080,
+      "y": 320
     },
     {
       "id": "carleton_tech_training",
@@ -259,70 +388,280 @@
       "type": "building",
       "exitOnly": false,
       "aliases": [
-        { "label": "P11", "type": "exterior" },
-        { "label": "P3", "type": "exterior" }
-      ]
+        {
+          "label": "P11",
+          "type": "exterior"
+        },
+        {
+          "label": "P3",
+          "type": "exterior"
+        }
+      ],
+      "x": 2080,
+      "y": 560
     },
     {
       "id": "nesbitt_biology_building",
       "label": "Nesbitt Biology Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 2080,
+      "y": 640
     },
     {
       "id": "p9_stairs",
       "label": "P9",
       "type": "stairs",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 2000,
+      "y": 640
     },
     {
       "id": "robertson_hall",
       "label": "Robertson Hall",
       "type": "building",
       "exitOnly": false,
-      "aliases": []
+      "aliases": [],
+      "x": 1920,
+      "y": 720
     }
   ],
   "edges": [
-    { "from": "loeb_building", "to": "junction1", "weight": 1, "type": "flat" },
-    { "from": "loeb_building", "to": "arise", "weight": 1, "type": "flat" },
-    { "from": "arise", "to": "intersection4", "weight": 1, "type": "flat" },
-    { "from": "junction1", "to": "junction2", "weight": 1, "type": "flat" },
-    { "from": "junction2", "to": "stage_exits", "weight": 1, "type": "flat" },
-    { "from": "stage_exits", "to": "intersection", "weight": 1, "type": "flat" },
-    { "from": "intersection", "to": "macodrum_library", "weight": 1, "type": "flat" },
-    { "from": "macodrum_library", "to": "dunton_tower", "weight": 1, "type": "flat" },
-    { "from": "dunton_tower", "to": "azrieli_pavilion", "weight": 1, "type": "flat" },
-    { "from": "azrieli_pavilion", "to": "intersection2", "weight": 1, "type": "flat" },
-    { "from": "intersection", "to": "paterson_hall", "weight": 1, "type": "flat" },
-    { "from": "paterson_hall", "to": "intersection3", "weight": 1, "type": "flat" },
-    { "from": "intersection3", "to": "tory_building_a", "weight": 1, "type": "flat" },
-    { "from": "tory_building_a", "to": "intersection2", "weight": 1, "type": "flat" },
-    { "from": "intersection2", "to": "university_centre_a", "weight": 1, "type": "ramp" },
-    { "from": "intersection2", "to": "azrieli_theatre", "weight": 1, "type": "flat" },
-    { "from": "azrieli_theatre", "to": "tory_building_b", "weight": 1, "type": "flat" },
-    { "from": "intersection3", "to": "intersection4", "weight": 1, "type": "stairs" },
-    { "from": "intersection4", "to": "intersection5", "weight": 1, "type": "flat" },
-    { "from": "richcraft_hall", "to": "steacie_building_a", "weight": 1, "type": "flat" },
-    { "from": "steacie_building_a", "to": "herzberg_laboratories", "weight": 1, "type": "flat" },
-    { "from": "herzberg_laboratories", "to": "intersection5", "weight": 1, "type": "flat" },
-    { "from": "intersection5", "to": "junction3", "weight": 1, "type": "flat" },
-    { "from": "junction3", "to": "university_centre_a", "weight": 1, "type": "flat" },
-    { "from": "university_centre_a", "to": "university_centre_stairs", "weight": 1, "type": "stairs" },
-    { "from": "university_centre_stairs", "to": "architecture_building", "weight": 1, "type": "flat" },
-    { "from": "architecture_building", "to": "canal_building", "weight": 1, "type": "flat" },
-    { "from": "canal_building", "to": "mackenzie_building_stairs", "weight": 1, "type": "stairs" },
-    { "from": "architecture_building", "to": "nicol_building", "weight": 1, "type": "flat" },
-    { "from": "nicol_building", "to": "junction4", "weight": 1, "type": "flat" },
-    { "from": "junction4", "to": "residence_commons", "weight": 1, "type": "flat" },
-    { "from": "residence_commons", "to": "st_patricks_building", "weight": 1, "type": "flat" },
-    { "from": "nicol_building", "to": "maintenance_building", "weight": 1, "type": "flat" },
-    { "from": "maintenance_building", "to": "junction5", "weight": 1, "type": "flat" },
-    { "from": "maintenance_building", "to": "carleton_tech_training", "weight": 1, "type": "flat" },
-    { "from": "carleton_tech_training", "to": "nesbitt_biology_building", "weight": 1, "type": "flat" },
-    { "from": "nesbitt_biology_building", "to": "p9_stairs", "weight": 1, "type": "stairs" },
-    { "from": "p9_stairs", "to": "robertson_hall", "weight": 1, "type": "flat" }
+    {
+      "from": "loeb_building",
+      "to": "junction1",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "loeb_building",
+      "to": "arise",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "arise",
+      "to": "intersection4",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "junction1",
+      "to": "southam_hall",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "southam_hall",
+      "to": "junction2",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "junction2",
+      "to": "stage_exits",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "stage_exits",
+      "to": "intersection",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "intersection",
+      "to": "macodrum_library",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "macodrum_library",
+      "to": "dunton_tower",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "dunton_tower",
+      "to": "azrieli_pavilion",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "azrieli_pavilion",
+      "to": "intersection2",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "intersection",
+      "to": "paterson_hall",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "paterson_hall",
+      "to": "intersection3",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "intersection3",
+      "to": "tory_building_a",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "tory_building_a",
+      "to": "intersection2",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "intersection2",
+      "to": "university_centre",
+      "weight": 1,
+      "type": "ramp"
+    },
+    {
+      "from": "intersection2",
+      "to": "azrieli_theatre",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "azrieli_theatre",
+      "to": "tory_building_b",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "intersection3",
+      "to": "intersection4",
+      "weight": 1,
+      "type": "stairs"
+    },
+    {
+      "from": "intersection4",
+      "to": "intersection5",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "richcraft_hall",
+      "to": "steacie_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "steacie_building",
+      "to": "herzberg_laboratories",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "herzberg_laboratories",
+      "to": "intersection5",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "intersection5",
+      "to": "junction3",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "junction3",
+      "to": "university_centre",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "university_centre",
+      "to": "university_centre_stairs",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "university_centre_stairs",
+      "to": "architecture_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "architecture_building",
+      "to": "canal_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "canal_building",
+      "to": "mackenzie_building_stairs",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "architecture_building",
+      "to": "nicol_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "nicol_building",
+      "to": "junction4",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "junction4",
+      "to": "residence_commons",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "residence_commons",
+      "to": "st_patricks_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "nicol_building",
+      "to": "maintenance_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "maintenance_building",
+      "to": "junction5",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "maintenance_building",
+      "to": "carleton_tech_training",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "carleton_tech_training",
+      "to": "nesbitt_biology_building",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "nesbitt_biology_building",
+      "to": "p9_stairs",
+      "weight": 1,
+      "type": "flat"
+    },
+    {
+      "from": "p9_stairs",
+      "to": "robertson_hall",
+      "weight": 1,
+      "type": "flat"
+    }
   ]
 }

@@ -1,0 +1,57 @@
+import { Size, Viewport, WorldBounds } from '../types/types';
+
+export function clampViewport(viewport: Viewport, bounds: WorldBounds, size: Size): Viewport {
+  if (size.width <= 0 || size.height <= 0) {
+    return viewport;
+  }
+
+  const scaledWidth = bounds.width * viewport.scale;
+  const scaledHeight = bounds.height * viewport.scale;
+
+  let tx: number;
+  let ty: number;
+
+  if (scaledWidth <= size.width) {
+    tx = size.width / 2 - ((bounds.minX + bounds.maxX) / 2) * viewport.scale;
+  } else {
+    const minTx = size.width - bounds.maxX * viewport.scale;
+    const maxTx = -bounds.minX * viewport.scale;
+    tx = clamp(viewport.tx, minTx, maxTx);
+  }
+
+  if (scaledHeight <= size.height) {
+    ty = size.height / 2 - ((bounds.minY + bounds.maxY) / 2) * viewport.scale;
+  } else {
+    const minTy = size.height - bounds.maxY * viewport.scale;
+    const maxTy = -bounds.minY * viewport.scale;
+    ty = clamp(viewport.ty, minTy, maxTy);
+  }
+
+  return { ...viewport, tx, ty };
+}
+
+export function worldToScreenX(x: number, viewport: Viewport): number {
+  return x * viewport.scale + viewport.tx;
+}
+
+export function worldToScreenY(y: number, viewport: Viewport): number {
+  return y * viewport.scale + viewport.ty;
+}
+
+export function screenToWorldX(x: number, viewport: Viewport): number {
+  return (x - viewport.tx) / viewport.scale;
+}
+
+export function screenToWorldY(y: number, viewport: Viewport): number {
+  return (y - viewport.ty) / viewport.scale;
+}
+
+export function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function distance(aX: number, aY: number, bX: number, bY: number): number {
+  const dx = aX - bX;
+  const dy = aY - bY;
+  return Math.sqrt(dx * dx + dy * dy);
+}

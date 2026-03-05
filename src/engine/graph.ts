@@ -1,50 +1,39 @@
-import { Graph, Node, Edge } from '../types/types';
-import graphData from '../data/graph.json';
+import graphJson from '../data/graph.json';
+import { Graph, GraphNode } from '../types/types';
 
-// Adjacency list: nodeId -> array of { neighborId, weight, edgeType }
 export interface AdjacencyEntry {
-    neighborId: string;
-    weight: number;
-    edgeType: string;
+  neighborId: string;
+  weight: number;
 }
 
 export type AdjacencyList = Map<string, AdjacencyEntry[]>;
 
-// Build bidirectional adjacency list from graph JSON — O(E)
-export function buildAdjacencyList(graph: Graph): AdjacencyList {
-    const adjacency: AdjacencyList = new Map();
+export const graph: Graph = graphJson as Graph;
 
-    // Initialize every node with an empty list
-    for (const node of graph.nodes) {
-        adjacency.set(node.id, []);
-    }
+export function buildAdjacencyList(data: Graph): AdjacencyList {
+  const adjacency: AdjacencyList = new Map();
 
-    // Add both directions for each edge
-    for (const edge of graph.edges) {
-        adjacency.get(edge.from)!.push({
-            neighborId: edge.to,
-            weight: edge.weight,
-            edgeType: edge.type,
-        });
-        adjacency.get(edge.to)!.push({
-            neighborId: edge.from,
-            weight: edge.weight,
-            edgeType: edge.type,
-        });
-    }
+  for (const node of data.nodes) {
+    adjacency.set(node.id, []);
+  }
 
-    return adjacency;
+  for (const edge of data.edges) {
+    adjacency.get(edge.from)?.push({ neighborId: edge.to, weight: edge.weight });
+    adjacency.get(edge.to)?.push({ neighborId: edge.from, weight: edge.weight });
+  }
+
+  return adjacency;
 }
 
-// Node lookup map by id — O(1) access
-export function buildNodeMap(graph: Graph): Map<string, Node> {
-    const map = new Map<string, Node>();
-    for (const node of graph.nodes) {
-        map.set(node.id, node);
-    }
-    return map;
+export function buildNodeMap(data: Graph): Map<string, GraphNode> {
+  const map = new Map<string, GraphNode>();
+
+  for (const node of data.nodes) {
+    map.set(node.id, node);
+  }
+
+  return map;
 }
 
-export const graph = graphData as Graph;
 export const adjacencyList = buildAdjacencyList(graph);
 export const nodeMap = buildNodeMap(graph);

@@ -1,38 +1,41 @@
 import { Route } from '../types/types';
 
-// Reconstruct all shortest paths via DFS on predecessor map — O(P×L)
-// P = number of shortest paths, L = path length
 export function buildAllPaths(
-    start: string,
-    end: string,
-    predecessors: Map<string, string[]>,
-    distances: Map<string, number>
+  start: string,
+  end: string,
+  predecessors: Map<string, string[]>,
+  distances: Map<string, number>,
 ): Route[] {
-    // No path exists
-    if (distances.get(end) === Infinity) return [];
+  const bestDistance = distances.get(end);
 
-    // Start equals end
-    if (start === end) {
-        return [{ path: [start], distance: 0 }];
+  if (bestDistance === undefined || !Number.isFinite(bestDistance)) {
+    return [];
+  }
+
+  if (start === end) {
+    return [{ path: [start], distance: 0 }];
+  }
+
+  const allPaths: string[][] = [];
+
+  function backtrack(current: string, path: string[]): void {
+    if (current === start) {
+      allPaths.push([...path].reverse());
+      return;
     }
 
-    const distance = distances.get(end)!;
-    const allPaths: string[][] = [];
-
-    // DFS backwards from end to start using predecessor map
-    function dfs(current: string, pathSoFar: string[]): void {
-        if (current === start) {
-            allPaths.push([...pathSoFar].reverse());
-            return;
-        }
-
-        const preds = predecessors.get(current) ?? [];
-        for (const pred of preds) {
-            dfs(pred, [...pathSoFar, pred]);
-        }
+    const prev = predecessors.get(current) ?? [];
+    for (const nodeId of prev) {
+      path.push(nodeId);
+      backtrack(nodeId, path);
+      path.pop();
     }
+  }
 
-    dfs(end, [end]);
+  backtrack(end, [end]);
 
-    return allPaths.map(path => ({ path, distance }));
+  return allPaths.map((path) => ({
+    path,
+    distance: bestDistance,
+  }));
 }

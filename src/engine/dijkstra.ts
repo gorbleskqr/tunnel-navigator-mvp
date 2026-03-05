@@ -2,25 +2,17 @@ import { AdjacencyList } from './graph';
 
 export interface DijkstraResult {
   distances: Map<string, number>;
-  predecessors: Map<string, string[]>; // multi-predecessor for equal shortest paths
+  predecessors: Map<string, string[]>;
 }
 
-// Dijkstra with multi-predecessor tracking — O((V+E) log V)
-export function dijkstra(
-  start: string,
-  adjacency: AdjacencyList
-): DijkstraResult {
+export function dijkstra(start: string, adjacency: AdjacencyList): DijkstraResult {
   const distances = new Map<string, number>();
   const predecessors = new Map<string, string[]>();
   const visited = new Set<string>();
-
-  // Priority queue as a sorted array [nodeId, distance]
-  // For MVP scale this is fine — swap for a heap if graph grows significantly
   const queue: [string, number][] = [];
 
-  // Initialize all distances to infinity
   for (const nodeId of adjacency.keys()) {
-    distances.set(nodeId, Infinity);
+    distances.set(nodeId, Number.POSITIVE_INFINITY);
     predecessors.set(nodeId, []);
   }
 
@@ -28,29 +20,30 @@ export function dijkstra(
   queue.push([start, 0]);
 
   while (queue.length > 0) {
-    // Sort ascending by distance and pop smallest
     queue.sort((a, b) => a[1] - b[1]);
-    const [current, currentDist] = queue.shift()!;
+    const [currentId, currentDistance] = queue.shift() as [string, number];
 
-    if (visited.has(current)) continue;
-    visited.add(current);
+    if (visited.has(currentId)) {
+      continue;
+    }
 
-    const neighbors = adjacency.get(current) ?? [];
+    visited.add(currentId);
+    const neighbors = adjacency.get(currentId) ?? [];
 
-    for (const { neighborId, weight } of neighbors) {
-      if (visited.has(neighborId)) continue;
+    for (const neighbor of neighbors) {
+      if (visited.has(neighbor.neighborId)) {
+        continue;
+      }
 
-      const newDist = currentDist + weight;
-      const bestDist = distances.get(neighborId) ?? Infinity;
+      const candidateDistance = currentDistance + neighbor.weight;
+      const bestDistance = distances.get(neighbor.neighborId) ?? Number.POSITIVE_INFINITY;
 
-      if (newDist < bestDist) {
-        // Found a shorter path
-        distances.set(neighborId, newDist);
-        predecessors.set(neighborId, [current]);
-        queue.push([neighborId, newDist]);
-      } else if (newDist === bestDist) {
-        // Equal length path — track all predecessors
-        predecessors.get(neighborId)!.push(current);
+      if (candidateDistance < bestDistance) {
+        distances.set(neighbor.neighborId, candidateDistance);
+        predecessors.set(neighbor.neighborId, [currentId]);
+        queue.push([neighbor.neighborId, candidateDistance]);
+      } else if (candidateDistance === bestDistance) {
+        predecessors.get(neighbor.neighborId)?.push(currentId);
       }
     }
   }
