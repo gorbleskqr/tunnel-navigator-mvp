@@ -12,7 +12,7 @@ import {
   type GestureResponderEvent,
 } from 'react-native';
 
-import { adjacencyList, graph } from '../engine/graph';
+import { buildAdjacencyList, graph } from '../engine/graph';
 import {
   clamp,
   clampViewport,
@@ -28,7 +28,7 @@ import {
   getZoomLimits,
 } from '../services/layoutService';
 import { getRoutes } from '../services/routeService';
-import { Endpoint, Route, Size, Slot, Viewport } from '../types/types';
+import { Edge, EdgeBendMode, Endpoint, Route, Size, Slot, Viewport } from '../types/types';
 
 const SLOT_RADIUS = 18;
 const ENDPOINT_RADIUS = 24;
@@ -64,6 +64,7 @@ type InteractionState =
     startTy: number;
     moved: boolean;
     slotTapCandidateId: string | null;
+    edgeTapCandidateIndex: number | null;
   }
   | {
     kind: 'slot-drag';
@@ -96,12 +97,93 @@ interface DraggingEndpointState {
   targetSlotId: string | null;
 }
 
+interface EdgeSegment {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
 function approxEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < 0.0001;
 }
 
 function edgeKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+function getEdgeBendMode(edge: Edge): EdgeBendMode {
+  return edge.render?.bend === 'vh' ? 'vh' : 'hv';
+}
+
+function getEdgeSegments(edge: Edge, slotById: Map<string, Slot>): EdgeSegment[] {
+  const from = slotById.get(edge.from);
+  const to = slotById.get(edge.to);
+
+  if (!from || !to) {
+    return [];
+  }
+
+  const mode = edge.render?.mode ?? 'straight';
+  const waypoints = edge.render?.waypoints ?? [];
+
+  if (mode === 'straight') {
+    return [{ x1: from.x, y1: from.y, x2: to.x, y2: to.y }];
+  }
+
+  const points: Array<{ x: number; y: number }> = [{ x: from.x, y: from.y }];
+  if (waypoints.length > 0) {
+    points.push(...waypoints);
+  } else {
+    const bend = getEdgeBendMode(edge);
+    points.push(
+      bend === 'vh'
+        ? { x: from.x, y: to.y }
+        : { x: to.x, y: from.y },
+    );
+  }
+  points.push({ x: to.x, y: to.y });
+
+  const segments: EdgeSegment[] = [];
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const a = points[i];
+    const b = points[i + 1];
+    if (a.x === b.x && a.y === b.y) {
+      continue;
+    }
+
+    segments.push({
+      x1: a.x,
+      y1: a.y,
+      x2: b.x,
+      y2: b.y,
+    });
+  }
+
+  return segments;
+}
+
+function distanceToSegment(
+  pointX: number,
+  pointY: number,
+  segment: EdgeSegment,
+): number {
+  const ax = segment.x1;
+  const ay = segment.y1;
+  const bx = segment.x2;
+  const by = segment.y2;
+  const abx = bx - ax;
+  const aby = by - ay;
+  const lengthSq = abx * abx + aby * aby;
+
+  if (lengthSq <= 0.000001) {
+    return distance(pointX, pointY, ax, ay);
+  }
+
+  const t = clamp(((pointX - ax) * abx + (pointY - ay) * aby) / lengthSq, 0, 1);
+  const projX = ax + t * abx;
+  const projY = ay + t * aby;
+  return distance(pointX, pointY, projX, projY);
 }
 
 function midpoint(a: TouchPoint, b: TouchPoint): { x: number; y: number } {
@@ -139,9 +221,11 @@ function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
 
 export default function GraphCanvas() {
   const [slots, setSlots] = useState<Slot[]>(() => buildSlotsFromGraph(graph));
+  const [edges, setEdges] = useState<Edge[]>(() => graph.edges.map((edge) => ({ ...edge })));
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [editLayoutMode, setEditLayoutMode] = useState(false);
   const [exportVisible, setExportVisible] = useState(false);
+  const [edgeEditorIndex, setEdgeEditorIndex] = useState<number | null>(null);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [draggingEndpoint, setDraggingEndpoint] = useState<DraggingEndpointState | null>(null);
   const [viewportSize, setViewportSize] = useState<Size>({ width: 0, height: 0 });
@@ -256,6 +340,13 @@ export default function GraphCanvas() {
     return new Map(slots.map((slot) => [slot.id, slot]));
   }, [slots]);
 
+  const adjacency = useMemo(() => {
+    return buildAdjacencyList({
+      nodes: graph.nodes,
+      edges,
+    });
+  }, [edges]);
+
   const routes = useMemo<Route[]>(() => {
     if (endpoints.length !== 2) {
       return [];
@@ -266,8 +357,8 @@ export default function GraphCanvas() {
       return [];
     }
 
-    return getRoutes(ordered[0].slotId, ordered[1].slotId, adjacencyList);
-  }, [endpoints]);
+    return getRoutes(ordered[0].slotId, ordered[1].slotId, adjacency);
+  }, [adjacency, endpoints]);
 
   const highlightedEdgeKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -294,9 +385,12 @@ export default function GraphCanvas() {
   }, [routes]);
 
   const exportJson = useMemo(() => {
-    const withPositions = exportGraphWithSlotPositions(graph, slots);
+    const withPositions = exportGraphWithSlotPositions({
+      nodes: graph.nodes,
+      edges,
+    }, slots);
     return JSON.stringify(withPositions, null, 2);
-  }, [slots]);
+  }, [edges, slots]);
 
   const worldSize = useMemo(() => {
     return {
@@ -406,6 +500,7 @@ export default function GraphCanvas() {
 
   useEffect(() => {
     if (!editLayoutMode) {
+      setEdgeEditorIndex(null);
       return;
     }
 
@@ -548,6 +643,30 @@ export default function GraphCanvas() {
     return null;
   };
 
+  const getEdgeHitAtWorldPosition = (
+    worldX: number,
+    worldY: number,
+    radiusWorld: number,
+  ): number | null => {
+    let bestIndex: number | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let edgeIndex = 0; edgeIndex < edges.length; edgeIndex += 1) {
+      const edge = edges[edgeIndex];
+      const segments = getEdgeSegments(edge, slotById);
+
+      for (const segment of segments) {
+        const d = distanceToSegment(worldX, worldY, segment);
+        if (d <= radiusWorld && d < bestDistance) {
+          bestDistance = d;
+          bestIndex = edgeIndex;
+        }
+      }
+    }
+
+    return bestIndex;
+  };
+
   const handleSlotTap = (slotId: string): void => {
     if (editLayoutRef.current) {
       return;
@@ -682,6 +801,9 @@ export default function GraphCanvas() {
       }
     }
 
+    const edgeHitIndex = editLayoutRef.current
+      ? getEdgeHitAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale)
+      : null;
     const tapHit = getSlotAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale);
     interactionRef.current = {
       kind: 'pan',
@@ -691,6 +813,7 @@ export default function GraphCanvas() {
       startTy: currentViewport.ty,
       moved: false,
       slotTapCandidateId: tapHit?.slot.id ?? null,
+      edgeTapCandidateIndex: edgeHitIndex,
     };
   };
 
@@ -792,6 +915,7 @@ export default function GraphCanvas() {
         startTy: currentViewport.ty,
         moved: false,
         slotTapCandidateId: null,
+        edgeTapCandidateIndex: null,
       };
     }
   };
@@ -803,8 +927,12 @@ export default function GraphCanvas() {
       finalizeEndpointDrop();
     }
 
-    if (currentInteraction.kind === 'pan' && !currentInteraction.moved && currentInteraction.slotTapCandidateId) {
-      handleSlotTap(currentInteraction.slotTapCandidateId);
+    if (currentInteraction.kind === 'pan' && !currentInteraction.moved) {
+      if (editLayoutRef.current && currentInteraction.edgeTapCandidateIndex !== null) {
+        setEdgeEditorIndex(currentInteraction.edgeTapCandidateIndex);
+      } else if (currentInteraction.slotTapCandidateId) {
+        handleSlotTap(currentInteraction.slotTapCandidateId);
+      }
     }
 
     interactionRef.current = { kind: 'idle' };
@@ -832,6 +960,59 @@ export default function GraphCanvas() {
       tx: centerX - anchorWorldX * scale,
       ty: centerY - anchorWorldY * scale,
     });
+  };
+
+  const selectedEdge = edgeEditorIndex !== null ? edges[edgeEditorIndex] : null;
+
+  const updateSelectedEdge = (updater: (edge: Edge) => Edge): void => {
+    if (edgeEditorIndex === null) {
+      return;
+    }
+
+    setEdges((previous) => previous.map((edge, index) => (
+      index === edgeEditorIndex ? updater(edge) : edge
+    )));
+  };
+
+  const adjustSelectedEdgeWeight = (delta: number): void => {
+    updateSelectedEdge((edge) => ({
+      ...edge,
+      weight: Math.max(1, edge.weight + delta),
+    }));
+  };
+
+  const toggleSelectedEdgeMode = (): void => {
+    updateSelectedEdge((edge) => {
+      const mode = edge.render?.mode ?? 'straight';
+      if (mode === 'straight') {
+        return {
+          ...edge,
+          render: {
+            mode: 'orthogonal',
+            bend: getEdgeBendMode(edge),
+            waypoints: edge.render?.waypoints,
+          },
+        };
+      }
+
+      return {
+        ...edge,
+        render: {
+          mode: 'straight',
+        },
+      };
+    });
+  };
+
+  const toggleSelectedEdgeBend = (): void => {
+    updateSelectedEdge((edge) => ({
+      ...edge,
+      render: {
+        mode: 'orthogonal',
+        bend: getEdgeBendMode(edge) === 'hv' ? 'vh' : 'hv',
+        waypoints: edge.render?.waypoints,
+      },
+    }));
   };
 
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
@@ -957,41 +1138,38 @@ export default function GraphCanvas() {
             </>
           ) : null}
 
-          {graph.edges.map((edge, index) => {
-            const fromSlot = slotById.get(edge.from);
-            const toSlot = slotById.get(edge.to);
-
-            if (!fromSlot || !toSlot) {
-              return null;
-            }
-
-            const dx = toSlot.x - fromSlot.x;
-            const dy = toSlot.y - fromSlot.y;
-            const length = Math.sqrt(dx * dx + dy * dy);
-            if (length <= 0.001) {
-              return null;
-            }
-
-            const angle = Math.atan2(dy, dx);
+          {edges.map((edge, index) => {
             const isHighlighted = highlightedEdgeKeys.has(edgeKey(edge.from, edge.to));
+            const segments = getEdgeSegments(edge, slotById);
 
-            return (
-              <View
-                key={`${edge.from}-${edge.to}-${index}`}
-                style={[
-                  styles.edge,
-                  {
-                    left: (fromSlot.x + toSlot.x) / 2 - length / 2,
-                    top: (fromSlot.y + toSlot.y) / 2 - (isHighlighted ? 2 : 1),
-                    width: length,
-                    height: isHighlighted ? 4 : 2,
-                    backgroundColor: isHighlighted ? '#f7f7f7' : (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
-                    opacity: isHighlighted ? 1 : 0.8,
-                    transform: [{ rotate: `${angle}rad` }],
-                  },
-                ]}
-              />
-            );
+            return segments.map((segment, segmentIndex) => {
+              const dx = segment.x2 - segment.x1;
+              const dy = segment.y2 - segment.y1;
+              const length = Math.sqrt(dx * dx + dy * dy);
+              if (length <= 0.001) {
+                return null;
+              }
+
+              const angle = Math.atan2(dy, dx);
+
+              return (
+                <View
+                  key={`${edge.from}-${edge.to}-${index}-${segmentIndex}`}
+                  style={[
+                    styles.edge,
+                    {
+                      left: (segment.x1 + segment.x2) / 2 - length / 2,
+                      top: (segment.y1 + segment.y2) / 2 - (isHighlighted ? 2 : 1),
+                      width: length,
+                      height: isHighlighted ? 4 : 2,
+                      backgroundColor: isHighlighted ? '#f7f7f7' : (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
+                      opacity: isHighlighted ? 1 : 0.84,
+                      transform: [{ rotate: `${angle}rad` }],
+                    },
+                  ]}
+                />
+              );
+            });
           })}
 
           {slots.map((slot) => {
@@ -1092,6 +1270,60 @@ export default function GraphCanvas() {
           </Text>
         </View>
       ) : null}
+
+      <Modal
+        visible={selectedEdge !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEdgeEditorIndex(null)}
+      >
+        <View style={styles.edgeEditorOverlay}>
+          <View style={styles.edgeEditorCard}>
+            <Text style={styles.edgeEditorTitle}>Edit Edge</Text>
+            {selectedEdge ? (
+              <>
+                <Text style={styles.edgeEditorMeta}>{`${selectedEdge.from} -> ${selectedEdge.to}`}</Text>
+                <Text style={styles.edgeEditorMeta}>Type: {selectedEdge.type}</Text>
+
+                <View style={styles.edgeEditorRow}>
+                  <Text style={styles.edgeEditorLabel}>Weight</Text>
+                  <View style={styles.edgeEditorStepper}>
+                    <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(-1)}>
+                      <Text style={styles.edgeEditorSmallBtnText}>-</Text>
+                    </Pressable>
+                    <Text style={styles.edgeEditorValue}>{selectedEdge.weight}</Text>
+                    <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(1)}>
+                      <Text style={styles.edgeEditorSmallBtnText}>+</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <View style={styles.edgeEditorRow}>
+                  <Text style={styles.edgeEditorLabel}>Mode</Text>
+                  <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeMode}>
+                    <Text style={styles.edgeEditorActionBtnText}>
+                      {selectedEdge.render?.mode ?? 'straight'}
+                    </Text>
+                  </Pressable>
+                </View>
+
+                {(selectedEdge.render?.mode ?? 'straight') === 'orthogonal' ? (
+                  <View style={styles.edgeEditorRow}>
+                    <Text style={styles.edgeEditorLabel}>Bend</Text>
+                    <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeBend}>
+                      <Text style={styles.edgeEditorActionBtnText}>{getEdgeBendMode(selectedEdge)}</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
+
+            <Pressable style={styles.edgeEditorCloseBtn} onPress={() => setEdgeEditorIndex(null)}>
+              <Text style={styles.edgeEditorCloseBtnText}>Done</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={exportVisible} animationType="slide" onRequestClose={() => setExportVisible(false)}>
         <View style={styles.exportModal}>
@@ -1343,6 +1575,98 @@ const styles = StyleSheet.create({
     color: '#cfddf3',
     fontSize: 12,
     textAlign: 'center',
+  },
+  edgeEditorOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(6, 10, 16, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  edgeEditorCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 14,
+    backgroundColor: '#111a28',
+    borderWidth: 1,
+    borderColor: '#2a3f5e',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    gap: 10,
+  },
+  edgeEditorTitle: {
+    color: '#eef5ff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  edgeEditorMeta: {
+    color: '#a4b7d5',
+    fontSize: 11,
+  },
+  edgeEditorRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  edgeEditorLabel: {
+    color: '#d6e4fa',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  edgeEditorStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  edgeEditorSmallBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#22324c',
+    borderWidth: 1,
+    borderColor: '#355077',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  edgeEditorSmallBtnText: {
+    color: '#e4efff',
+    fontSize: 18,
+    fontWeight: '700',
+    marginTop: -1,
+  },
+  edgeEditorValue: {
+    width: 28,
+    color: '#e4efff',
+    textAlign: 'center',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  edgeEditorActionBtn: {
+    minWidth: 112,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#22324c',
+    borderWidth: 1,
+    borderColor: '#355077',
+    alignItems: 'center',
+  },
+  edgeEditorActionBtnText: {
+    color: '#dce8fa',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  edgeEditorCloseBtn: {
+    marginTop: 6,
+    borderRadius: 10,
+    backgroundColor: '#2a7af5',
+    alignItems: 'center',
+    paddingVertical: 10,
+  },
+  edgeEditorCloseBtnText: {
+    color: '#f4f8ff',
+    fontWeight: '700',
+    fontSize: 13,
   },
   exportModal: {
     flex: 1,
