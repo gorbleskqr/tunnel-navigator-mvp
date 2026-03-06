@@ -1,4 +1,4 @@
-import { Graph, Size, Slot, WorldBounds } from '../types/types';
+import { Edge, Graph, GraphLayout, GraphTopology, Size, Slot, WorldBounds } from '../types/types';
 
 const DEFAULT_START_X = 220;
 const DEFAULT_START_Y = 220;
@@ -6,13 +6,15 @@ const DEFAULT_SPACING_X = 240;
 const DEFAULT_SPACING_Y = 150;
 const DEFAULT_ROOT_NODE_ID = 'nicol_building';
 
-export function buildSlotsFromGraph(graph: Graph): Slot[] {
+export function buildSlotsFromGraph(graph: Graph, layout?: GraphLayout): Slot[] {
   const fallback = buildFallbackPositions(graph);
+  const slotById = new Map((layout?.slots ?? []).map((slot) => [slot.id, slot]));
 
   return graph.nodes.map((node) => {
     const fallbackPosition = fallback.get(node.id) ?? { x: DEFAULT_START_X, y: DEFAULT_START_Y };
-    const x = Number.isFinite(node.x) ? (node.x as number) : fallbackPosition.x;
-    const y = Number.isFinite(node.y) ? (node.y as number) : fallbackPosition.y;
+    const layoutSlot = slotById.get(node.id);
+    const x = Number.isFinite(layoutSlot?.x) ? (layoutSlot?.x as number) : fallbackPosition.x;
+    const y = Number.isFinite(layoutSlot?.y) ? (layoutSlot?.y as number) : fallbackPosition.y;
 
     return {
       id: node.id,
@@ -23,23 +25,50 @@ export function buildSlotsFromGraph(graph: Graph): Slot[] {
   });
 }
 
-export function exportGraphWithSlotPositions(graph: Graph, slots: Slot[]): Graph {
+export function exportTopology(graph: Graph, edges: Edge[]): GraphTopology {
+  return {
+    nodes: graph.nodes.map((node) => ({ ...node })),
+    edges: edges.map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      weight: edge.weight,
+      type: edge.type,
+    })),
+  };
+}
+
+export function exportLayout(layout: GraphLayout, slots: Slot[], edges: Edge[], defaultCenterSlotId?: string): GraphLayout {
   const slotMap = new Map(slots.map((slot) => [slot.id, slot]));
+  const sortedNodeIds = slots.map((slot) => slot.id).sort((a, b) => a.localeCompare(b));
+  const edgeRenders = edges
+    .filter((edge) => edge.render && hasNonDefaultRender(edge.render.mode, edge.render.bend, edge.render.waypoints))
+    .map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      render: {
+        mode: edge.render?.mode ?? 'straight',
+        bend: edge.render?.bend,
+        waypoints: edge.render?.waypoints,
+      },
+    }));
 
   return {
-    nodes: graph.nodes.map((node) => {
-      const slot = slotMap.get(node.id);
+    slots: sortedNodeIds.map((id) => {
+      const slot = slotMap.get(id);
       if (!slot) {
-        return node;
+        return { id, x: DEFAULT_START_X, y: DEFAULT_START_Y };
       }
 
       return {
-        ...node,
+        id,
         x: round(slot.x),
         y: round(slot.y),
       };
     }),
-    edges: graph.edges,
+    ...(edgeRenders.length > 0 ? { edgeRenders } : {}),
+    view: {
+      defaultCenterSlotId: defaultCenterSlotId ?? layout.view?.defaultCenterSlotId ?? DEFAULT_ROOT_NODE_ID,
+    },
   };
 }
 
@@ -177,6 +206,22 @@ function buildFallbackPositions(graph: Graph): Map<string, { x: number; y: numbe
   }
 
   return positions;
+}
+
+function hasNonDefaultRender(
+  mode: 'straight' | 'orthogonal',
+  bend?: 'hv' | 'vh',
+  waypoints?: Array<{ x: number; y: number }>,
+): boolean {
+  if (mode !== 'straight') {
+    return true;
+  }
+
+  if (bend && bend !== 'hv') {
+    return true;
+  }
+
+  return (waypoints?.length ?? 0) > 0;
 }
 
 function getNearestNeighborDistances(slots: Slot[]): number[] {

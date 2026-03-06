@@ -15,7 +15,7 @@ import {
   type GestureResponderEvent,
 } from 'react-native';
 
-import { buildAdjacencyList, graph } from '../engine/graph';
+import { buildAdjacencyList, graph, graphLayout } from '../engine/graph';
 import {
   clamp,
   clampViewport,
@@ -28,7 +28,8 @@ import {
 import {
   buildSlotsFromGraph,
   clampScalar,
-  exportGraphWithSlotPositions,
+  exportLayout,
+  exportTopology,
   getWorldBounds,
   getZoomLimits,
 } from '../services/layoutService';
@@ -253,7 +254,7 @@ export default function GraphCanvas() {
   const windowSize = useWindowDimensions();
   const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0;
   const bottomInset = Platform.OS === 'android' ? 44 : 0;
-  const [slots, setSlots] = useState<Slot[]>(() => buildSlotsFromGraph(graph));
+  const [slots, setSlots] = useState<Slot[]>(() => buildSlotsFromGraph(graph, graphLayout));
   const [edges, setEdges] = useState<Edge[]>(() => graph.edges.map((edge) => ({ ...edge })));
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
   const [editLayoutMode, setEditLayoutMode] = useState(false);
@@ -264,6 +265,7 @@ export default function GraphCanvas() {
   const [viewportSize, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ scale: 1, tx: 0, ty: 0 });
   const [gridSizeIndex, setGridSizeIndex] = useState(1);
+  const defaultCenterSlotId = graphLayout.view?.defaultCenterSlotId ?? DEFAULT_CENTER_SLOT_ID;
 
   const initializedRef = useRef(false);
   const interactionRef = useRef<InteractionState>({ kind: 'idle' });
@@ -431,20 +433,13 @@ export default function GraphCanvas() {
     return new Set(endpoints.map((endpoint) => endpoint.slotId));
   }, [endpoints]);
 
-  const exportJson = useMemo(() => {
-    const withPositions = exportGraphWithSlotPositions({
-      nodes: graph.nodes,
-      edges,
-    }, slots);
-    return JSON.stringify(withPositions, null, 2);
-  }, [edges, slots]);
+  const exportTopologyJson = useMemo(() => {
+    return JSON.stringify(exportTopology(graph, edges), null, 2);
+  }, [edges]);
 
-  const worldSize = useMemo(() => {
-    return {
-      width: Math.max(1, bounds.maxX + 140),
-      height: Math.max(1, bounds.maxY + 140),
-    };
-  }, [bounds]);
+  const exportLayoutJson = useMemo(() => {
+    return JSON.stringify(exportLayout(graphLayout, slots, edges, defaultCenterSlotId), null, 2);
+  }, [defaultCenterSlotId, edges, slots]);
 
   const visibleLabelIds = useMemo(() => {
     if (editLayoutMode) {
@@ -621,7 +616,7 @@ export default function GraphCanvas() {
     initializedRef.current = true;
     const startScale = getPreferredFocusScale();
     setViewport(() => {
-      const slot = slotById.get(DEFAULT_CENTER_SLOT_ID) ?? slots[0];
+      const slot = slotById.get(defaultCenterSlotId) ?? slots[0];
       const centered: Viewport = {
         scale: startScale,
         tx: viewportSize.width / 2 - slot.x * startScale,
@@ -629,7 +624,7 @@ export default function GraphCanvas() {
       };
       return clampViewport(centered, bounds, viewportSize);
     });
-  }, [bounds, slots, slotById, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
+  }, [bounds, defaultCenterSlotId, slots, slotById, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
 
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
@@ -1184,7 +1179,7 @@ export default function GraphCanvas() {
           <Text style={styles.title}>Tunnel Navigator</Text>
           <Text style={styles.subtitle}>
             {editLayoutMode
-              ? 'Layout mode: drag slots, export graph.json'
+              ? 'Layout mode: drag slots, export graph + layout'
               : endpoints.length === 2
                 ? `${routes.length} shortest route${routes.length === 1 ? '' : 's'} highlighted`
                 : 'Tap empty slots to place up to two endpoints'}
@@ -1446,7 +1441,7 @@ export default function GraphCanvas() {
           <Pressable
             style={[styles.zoomButton, Platform.OS === 'web' ? styles.zoomButtonSpacer : null]}
             onPress={() => {
-              centerOnSlot(DEFAULT_CENTER_SLOT_ID, getPreferredFocusScale());
+              centerOnSlot(defaultCenterSlotId, getPreferredFocusScale());
             }}
           >
             <Text style={styles.zoomButtonText}>C</Text>
@@ -1527,17 +1522,22 @@ export default function GraphCanvas() {
       <Modal visible={exportVisible} animationType="slide" onRequestClose={() => setExportVisible(false)}>
         <View style={styles.exportModal}>
           <View style={styles.exportHeader}>
-            <Text style={styles.exportTitle}>Export graph.json</Text>
+            <Text style={styles.exportTitle}>Export graph + layout</Text>
             <Pressable style={styles.exportCloseButton} onPress={() => setExportVisible(false)}>
               <Text style={styles.exportCloseButtonText}>Close</Text>
             </Pressable>
           </View>
           <Text style={styles.exportHint}>
-            Copy this JSON and replace src/data/graph.json. Layout x/y values are now embedded into nodes.
+            Copy both JSON blocks and replace src/data/graph.json and src/data/layout.json.
           </Text>
 
           <ScrollView style={styles.exportBody}>
-            <Text selectable style={styles.exportCode}>{exportJson}</Text>
+            <Text selectable style={styles.exportCode}>
+              {'// src/data/graph.json\n'}
+              {exportTopologyJson}
+              {'\n\n// src/data/layout.json\n'}
+              {exportLayoutJson}
+            </Text>
           </ScrollView>
         </View>
       </Modal>
