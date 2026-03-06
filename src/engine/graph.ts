@@ -1,5 +1,6 @@
 import graphJson from '../data/graph.json';
-import { Graph, GraphNode } from '../types/types';
+import layoutJson from '../data/layout.json';
+import { Edge, Graph, GraphLayout, GraphNode, GraphTopology } from '../types/types';
 
 export interface AdjacencyEntry {
   neighborId: string;
@@ -8,9 +9,11 @@ export interface AdjacencyEntry {
 
 export type AdjacencyList = Map<string, AdjacencyEntry[]>;
 
-export const graph: Graph = graphJson as Graph;
+export const graphTopology: GraphTopology = graphJson as GraphTopology;
+export const graphLayout: GraphLayout = layoutJson as GraphLayout;
+export const graph: Graph = buildGraph(graphTopology, graphLayout);
 
-export function buildAdjacencyList(data: Graph): AdjacencyList {
+export function buildAdjacencyList(data: Pick<Graph, 'nodes' | 'edges'>): AdjacencyList {
   const adjacency: AdjacencyList = new Map();
 
   for (const node of data.nodes) {
@@ -37,3 +40,23 @@ export function buildNodeMap(data: Graph): Map<string, GraphNode> {
 
 export const adjacencyList = buildAdjacencyList(graph);
 export const nodeMap = buildNodeMap(graph);
+
+function buildGraph(topology: GraphTopology, layout: GraphLayout): Graph {
+  const edgeRenderByKey = new Map<string, Edge['render']>();
+
+  for (const hint of layout.edgeRenders ?? []) {
+    edgeRenderByKey.set(edgeKey(hint.from, hint.to), hint.render);
+  }
+
+  return {
+    nodes: topology.nodes.map((node) => ({ ...node })),
+    edges: topology.edges.map((edge) => {
+      const render = edgeRenderByKey.get(edgeKey(edge.from, edge.to));
+      return render ? { ...edge, render } : { ...edge };
+    }),
+  };
+}
+
+function edgeKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}

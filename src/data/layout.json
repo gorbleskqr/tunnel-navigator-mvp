@@ -1,0 +1,192 @@
+{
+  "slots": [
+    {
+      "id": "loeb_building",
+      "x": 720,
+      "y": 880
+    },
+    {
+      "id": "junction1",
+      "x": 720,
+      "y": 720
+    },
+    {
+      "id": "southam_hall",
+      "x": 720,
+      "y": 560
+    },
+    {
+      "id": "junction2",
+      "x": 800,
+      "y": 560
+    },
+    {
+      "id": "stage_exits",
+      "x": 880,
+      "y": 560
+    },
+    {
+      "id": "intersection",
+      "x": 1040,
+      "y": 560
+    },
+    {
+      "id": "intersection2",
+      "x": 1280,
+      "y": 400
+    },
+    {
+      "id": "intersection3",
+      "x": 1360,
+      "y": 560
+    },
+    {
+      "id": "intersection4",
+      "x": 1440,
+      "y": 720
+    },
+    {
+      "id": "intersection5",
+      "x": 1520,
+      "y": 720
+    },
+    {
+      "id": "arise",
+      "x": 880,
+      "y": 880
+    },
+    {
+      "id": "paterson_hall",
+      "x": 1200,
+      "y": 560
+    },
+    {
+      "id": "macodrum_library",
+      "x": 1040,
+      "y": 400
+    },
+    {
+      "id": "dunton_tower",
+      "x": 1120,
+      "y": 400
+    },
+    {
+      "id": "azrieli_pavilion",
+      "x": 1200,
+      "y": 400
+    },
+    {
+      "id": "azrieli_theatre",
+      "x": 1360,
+      "y": 320
+    },
+    {
+      "id": "tory_building_a",
+      "x": 1360,
+      "y": 480
+    },
+    {
+      "id": "tory_building_b",
+      "x": 1440,
+      "y": 320
+    },
+    {
+      "id": "university_centre",
+      "x": 1520,
+      "y": 400
+    },
+    {
+      "id": "university_centre_stairs",
+      "x": 1600,
+      "y": 400
+    },
+    {
+      "id": "richcraft_hall",
+      "x": 1680,
+      "y": 880
+    },
+    {
+      "id": "steacie_building",
+      "x": 1680,
+      "y": 800
+    },
+    {
+      "id": "herzberg_laboratories",
+      "x": 1520,
+      "y": 800
+    },
+    {
+      "id": "junction3",
+      "x": 1520,
+      "y": 640
+    },
+    {
+      "id": "architecture_building",
+      "x": 1680,
+      "y": 400
+    },
+    {
+      "id": "canal_building",
+      "x": 1680,
+      "y": 240
+    },
+    {
+      "id": "mackenzie_building_stairs",
+      "x": 1600,
+      "y": 240
+    },
+    {
+      "id": "nicol_building",
+      "x": 1760,
+      "y": 400
+    },
+    {
+      "id": "junction4",
+      "x": 1760,
+      "y": 320
+    },
+    {
+      "id": "residence_commons",
+      "x": 1760,
+      "y": 240
+    },
+    {
+      "id": "st_patricks_building",
+      "x": 1760,
+      "y": 0
+    },
+    {
+      "id": "maintenance_building",
+      "x": 1920,
+      "y": 400
+    },
+    {
+      "id": "junction5",
+      "x": 2080,
+      "y": 320
+    },
+    {
+      "id": "carleton_tech_training",
+      "x": 2080,
+      "y": 560
+    },
+    {
+      "id": "nesbitt_biology_building",
+      "x": 2080,
+      "y": 640
+    },
+    {
+      "id": "p9_stairs",
+      "x": 2000,
+      "y": 640
+    },
+    {
+      "id": "robertson_hall",
+      "x": 1920,
+      "y": 720
+    }
+  ],
+  "view": {
+    "defaultCenterSlotId": "nicol_building"
+  }
+}

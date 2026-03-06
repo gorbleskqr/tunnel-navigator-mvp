@@ -22,9 +22,7 @@
           "label": "P8",
           "type": "exterior"
         }
-      ],
-      "x": 720,
-      "y": 880
+      ]
     },
     {
       "id": "junction1",
@@ -40,18 +38,14 @@
           "label": "Kailash Mital Theatre",
           "type": "building"
         }
-      ],
-      "x": 720,
-      "y": 720
+      ]
     },
     {
       "id": "southam_hall",
       "label": "Southam Hall (Entrance B)",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 720,
-      "y": 560
+      "aliases": []
     },
     {
       "id": "junction2",
@@ -67,126 +61,98 @@
           "label": "ML",
           "type": "exterior"
         }
-      ],
-      "x": 800,
-      "y": 560
+      ]
     },
     {
       "id": "stage_exits",
       "label": "Stage Exits",
       "type": "building",
       "exitOnly": true,
-      "aliases": [],
-      "x": 880,
-      "y": 560
+      "aliases": []
     },
     {
       "id": "intersection",
       "label": "Intersection",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1040,
-      "y": 560
+      "aliases": []
     },
     {
       "id": "intersection2",
       "label": "Intersection 2",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1280,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "intersection3",
       "label": "Intersection 3",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1360,
-      "y": 560
+      "aliases": []
     },
     {
       "id": "intersection4",
       "label": "Intersection 4",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1440,
-      "y": 720
+      "aliases": []
     },
     {
       "id": "intersection5",
       "label": "Intersection 5",
       "type": "intersection",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1520,
-      "y": 720
+      "aliases": []
     },
     {
       "id": "arise",
       "label": "Arise",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 880,
-      "y": 880
+      "aliases": []
     },
     {
       "id": "paterson_hall",
       "label": "Paterson Hall",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1200,
-      "y": 560
+      "aliases": []
     },
     {
       "id": "macodrum_library",
       "label": "MacOdrum Library",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1040,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "dunton_tower",
       "label": "Dunton Tower",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1120,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "azrieli_pavilion",
       "label": "Azrieli Pavilion",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1200,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "azrieli_theatre",
       "label": "Azrieli Theatre",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1360,
-      "y": 320
+      "aliases": []
     },
     {
       "id": "tory_building_a",
       "label": "Tory Building (Entrance A)",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1360,
-      "y": 480
+      "aliases": []
     },
     {
       "id": "tory_building_b",
@@ -198,27 +164,21 @@
           "label": "University Centre (Entrance B)",
           "type": "building"
         }
-      ],
-      "x": 1440,
-      "y": 320
+      ]
     },
     {
       "id": "university_centre",
       "label": "University Centre",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1520,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "university_centre_stairs",
       "label": "University Centre (Stairs)",
       "type": "stairs",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1600,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "richcraft_hall",
@@ -230,27 +190,21 @@
           "label": "P16",
           "type": "exterior"
         }
-      ],
-      "x": 1680,
-      "y": 880
+      ]
     },
     {
       "id": "steacie_building",
       "label": "Steacie Building (Entrance A)",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1680,
-      "y": 800
+      "aliases": []
     },
     {
       "id": "herzberg_laboratories",
       "label": "Herzberg Laboratories",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1520,
-      "y": 800
+      "aliases": []
     },
     {
       "id": "junction3",
@@ -266,45 +220,35 @@
           "label": "Health Sciences Building",
           "type": "building"
         }
-      ],
-      "x": 1520,
-      "y": 640
+      ]
     },
     {
       "id": "architecture_building",
       "label": "Architecture Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1680,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "canal_building",
       "label": "Canal Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1680,
-      "y": 240
+      "aliases": []
     },
     {
       "id": "mackenzie_building_stairs",
       "label": "Mackenzie Building (Stairs)",
       "type": "stairs",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1600,
-      "y": 240
+      "aliases": []
     },
     {
       "id": "nicol_building",
       "label": "Nicol Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1760,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "junction4",
@@ -320,9 +264,7 @@
           "label": "Minto Case",
           "type": "building"
         }
-      ],
-      "x": 1760,
-      "y": 320
+      ]
     },
     {
       "id": "residence_commons",
@@ -334,27 +276,21 @@
           "label": "P17",
           "type": "exterior"
         }
-      ],
-      "x": 1760,
-      "y": 240
+      ]
     },
     {
       "id": "st_patricks_building",
       "label": "St. Patrick's Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1760,
-      "y": 0
+      "aliases": []
     },
     {
       "id": "maintenance_building",
       "label": "Maintenance Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1920,
-      "y": 400
+      "aliases": []
     },
     {
       "id": "junction5",
@@ -378,9 +314,7 @@
           "label": "Ice House",
           "type": "building"
         }
-      ],
-      "x": 2080,
-      "y": 320
+      ]
     },
     {
       "id": "carleton_tech_training",
@@ -396,36 +330,28 @@
           "label": "P3",
           "type": "exterior"
         }
-      ],
-      "x": 2080,
-      "y": 560
+      ]
     },
     {
       "id": "nesbitt_biology_building",
       "label": "Nesbitt Biology Building",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 2080,
-      "y": 640
+      "aliases": []
     },
     {
       "id": "p9_stairs",
       "label": "P9",
       "type": "stairs",
       "exitOnly": false,
-      "aliases": [],
-      "x": 2000,
-      "y": 640
+      "aliases": []
     },
     {
       "id": "robertson_hall",
       "label": "Robertson Hall",
       "type": "building",
       "exitOnly": false,
-      "aliases": [],
-      "x": 1920,
-      "y": 720
+      "aliases": []
     }
   ],
   "edges": [

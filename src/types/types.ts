@@ -14,8 +14,12 @@ export interface GraphNode {
   type: NodeType;
   exitOnly: boolean;
   aliases: Alias[];
-  x?: number;
-  y?: number;
+}
+
+export interface EdgeRenderConfig {
+  mode: EdgeRenderMode;
+  bend?: EdgeBendMode;
+  waypoints?: Array<{ x: number; y: number }>;
 }
 
 export interface Edge {
@@ -23,10 +27,33 @@ export interface Edge {
   to: string;
   weight: number;
   type: EdgeType;
-  render?: {
-    mode: EdgeRenderMode;
-    bend?: EdgeBendMode;
-    waypoints?: Array<{ x: number; y: number }>;
+  render?: EdgeRenderConfig;
+}
+
+export type TopologyEdge = Omit<Edge, 'render'>;
+
+export interface GraphTopology {
+  nodes: GraphNode[];
+  edges: TopologyEdge[];
+}
+
+export interface LayoutSlot {
+  id: string;
+  x: number;
+  y: number;
+}
+
+export interface EdgeRenderHint {
+  from: string;
+  to: string;
+  render: EdgeRenderConfig;
+}
+
+export interface GraphLayout {
+  slots: LayoutSlot[];
+  edgeRenders?: EdgeRenderHint[];
+  view?: {
+    defaultCenterSlotId?: string;
   };
 }
 
