@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
+  Easing,
   Modal,
   Platform,
   Pressable,
@@ -14,6 +15,8 @@ import {
   View,
   type GestureResponderEvent,
 } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 
 import { buildAdjacencyList, graph, graphLayout } from '../engine/graph';
 import {
@@ -42,13 +45,25 @@ const TAP_RADIUS_PX = 26;
 const DRAG_RADIUS_PX = 28;
 const SNAP_RADIUS_PX = 36;
 const TAP_MOVE_THRESHOLD = 8;
-const DELETE_TARGET_SIZE = 78;
-const DELETE_TARGET_MARGIN = 12;
 const DEFAULT_CENTER_SLOT_ID = 'nicol_building';
 const GRID_SIZE_OPTIONS = [40, 80, 120] as const;
-const LABEL_WIDTH = 132;
-const LABEL_HEIGHT = 26;
+const LABEL_BASE_WIDTH = 124;
+const LABEL_COMPACT_WIDTH = 96;
+const LABEL_JUNCTION_WIDTH = 148;
+const LABEL_JUNCTION_COMPACT_WIDTH = 108;
+const LABEL_LINE_HEIGHT = 11.2;
+const LABEL_VERTICAL_PADDING = 2;
 const LABEL_VIEWPORT_MARGIN = 20;
+const LABEL_LONG_PRESS_MS = 380;
+const LABEL_EXPAND_DURATION_MS = 1500;
+const HOLD_TO_DELETE_MS = 320;
+const DELETE_PROMPT_HIDE_MS = 2200;
+const DELETE_PROMPT_WIDTH = 74;
+const DELETE_PROMPT_HEIGHT = 32;
+const DELETE_PROMPT_OFFSET_Y = 52;
+// Keep layout editing local via .env.local so production builds stay read-only.
+const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
+const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
 
 const NODE_TYPE_COLORS: Record<string, string> = {
   building: '#3f96ff',
@@ -73,6 +88,7 @@ type InteractionState =
     kind: 'pan';
     startX: number;
     startY: number;
+    startedAt: number;
     startTx: number;
     startTy: number;
     moved: boolean;
@@ -87,6 +103,9 @@ type InteractionState =
     kind: 'endpoint-drag';
     endpointId: Endpoint['id'];
     originSlotId: string;
+    startX: number;
+    startY: number;
+    moved: boolean;
   }
   | {
     kind: 'pinch';
@@ -106,8 +125,13 @@ interface DraggingEndpointState {
   endpointId: Endpoint['id'];
   worldX: number;
   worldY: number;
-  overDeleteZone: boolean;
   targetSlotId: string | null;
+}
+
+interface DeletePromptState {
+  endpointId: Endpoint['id'];
+  x: number;
+  y: number;
 }
 
 interface EdgeSegment {
@@ -123,8 +147,38 @@ interface LabelCandidate {
   top: number;
   right: number;
   bottom: number;
+  alternateTop: number | null;
+  alternateBottom: number | null;
   priority: number;
 }
+
+interface LabelLayout {
+  left: number;
+  top: number;
+}
+
+interface LabelPresentation {
+  text: string;
+  lines: number;
+  width: number;
+  height: number;
+}
+
+interface TapPulseState {
+  x: number;
+  y: number;
+  key: number;
+}
+
+interface EndpointIndicator {
+  id: Endpoint['id'];
+  slotId: string;
+  x: number;
+  y: number;
+  angle: number;
+}
+
+type InfoTab = 'route' | 'legend';
 
 function approxEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < 0.0001;
@@ -250,6 +304,74 @@ function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
   ];
 }
 
+function getLabelPresentation(
+  slot: Slot,
+  editLayoutMode: boolean,
+  emphasized: boolean,
+  highZoomExpanded: boolean,
+): LabelPresentation | null {
+  if (editLayoutMode) {
+    return {
+      text: `${slot.node.label}\n${Math.round(slot.x)}, ${Math.round(slot.y)}`,
+      lines: 3,
+      width: LABEL_BASE_WIDTH,
+      height: LABEL_LINE_HEIGHT * 3 + LABEL_VERTICAL_PADDING * 2,
+    };
+  }
+
+  if (slot.node.type === 'intersection') {
+    return null;
+  }
+
+  if (slot.node.type === 'junction') {
+    const aliasLabels = slot.node.aliases
+      .map((alias) => alias.label.trim())
+      .filter((label) => label.length > 0);
+
+    if (aliasLabels.length === 0) {
+      return null;
+    }
+
+    if (!emphasized) {
+      return {
+        text: aliasLabels.length > 1 ? `${aliasLabels[0]} +${aliasLabels.length - 1}` : aliasLabels[0],
+        lines: 1,
+        width: LABEL_JUNCTION_COMPACT_WIDTH,
+        height: LABEL_LINE_HEIGHT + LABEL_VERTICAL_PADDING * 2,
+      };
+    }
+
+    const visibleAliasCount = highZoomExpanded ? 3 : 2;
+    const lines = aliasLabels.length > (visibleAliasCount + 1)
+      ? [...aliasLabels.slice(0, visibleAliasCount), `+${aliasLabels.length - visibleAliasCount} more`]
+      : aliasLabels;
+    const lineCount = Math.min(highZoomExpanded ? 4 : 3, lines.length);
+
+    return {
+      text: lines.join('\n'),
+      lines: lineCount,
+      width: highZoomExpanded ? LABEL_JUNCTION_WIDTH + 18 : LABEL_JUNCTION_WIDTH,
+      height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
+    };
+  }
+
+  if (!emphasized) {
+    return {
+      text: slot.node.label,
+      lines: 1,
+      width: LABEL_COMPACT_WIDTH,
+      height: LABEL_LINE_HEIGHT + LABEL_VERTICAL_PADDING * 2,
+    };
+  }
+
+  return {
+    text: slot.node.label,
+    lines: highZoomExpanded ? 5 : 3,
+    width: highZoomExpanded ? LABEL_BASE_WIDTH + 44 : LABEL_BASE_WIDTH + 18,
+    height: LABEL_LINE_HEIGHT * (highZoomExpanded ? 5 : 3) + LABEL_VERTICAL_PADDING * 2,
+  };
+}
+
 export default function GraphCanvas() {
   const windowSize = useWindowDimensions();
   const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0;
@@ -262,6 +384,16 @@ export default function GraphCanvas() {
   const [edgeEditorIndex, setEdgeEditorIndex] = useState<number | null>(null);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [draggingEndpoint, setDraggingEndpoint] = useState<DraggingEndpointState | null>(null);
+  const [slotTapPulse, setSlotTapPulse] = useState<TapPulseState | null>(null);
+  const [screenTapPulse, setScreenTapPulse] = useState<TapPulseState | null>(null);
+  const [toolsDockOpen, setToolsDockOpen] = useState(false);
+  const [toolsPinned, setToolsPinned] = useState(false);
+  const [routeInfoOpen, setRouteInfoOpen] = useState(false);
+  const [infoTab, setInfoTab] = useState<InfoTab>('route');
+  const [expandedLabelSlotId, setExpandedLabelSlotId] = useState<string | null>(null);
+  const [deletePrompt, setDeletePrompt] = useState<DeletePromptState | null>(null);
+  const [logoHintVisible, setLogoHintVisible] = useState(false);
+  const [focusHintVisible, setFocusHintVisible] = useState(false);
   const [viewportSize, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ scale: 1, tx: 0, ty: 0 });
   const [gridSizeIndex, setGridSizeIndex] = useState(1);
@@ -279,7 +411,20 @@ export default function GraphCanvas() {
   const editLayoutRef = useRef(editLayoutMode);
 
   const shakeX = useRef(new Animated.Value(0)).current;
+  const introAnim = useRef(new Animated.Value(0)).current;
+  const routeGlow = useRef(new Animated.Value(0)).current;
+  const routeReveal = useRef(new Animated.Value(0)).current;
+  const slotTapPulseAnim = useRef(new Animated.Value(0)).current;
+  const screenTapPulseAnim = useRef(new Animated.Value(0)).current;
+  const logoHintAnim = useRef(new Animated.Value(0)).current;
+  const focusHintAnim = useRef(new Animated.Value(0)).current;
+  const toolsDockAnim = useRef(new Animated.Value(0)).current;
   const canvasRef = useRef<View | null>(null);
+  const logoHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const focusHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const expandedLabelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   slotsRef.current = slots;
   endpointsRef.current = endpoints;
@@ -287,6 +432,224 @@ export default function GraphCanvas() {
   viewportSizeRef.current = viewportSize;
   draggingEndpointRef.current = draggingEndpoint;
   editLayoutRef.current = editLayoutMode;
+
+  const triggerHaptic = (kind: 'light' | 'success' | 'warning'): void => {
+    if (Platform.OS === 'web') {
+      return;
+    }
+
+    try {
+      if (kind === 'light') {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        return;
+      }
+
+      if (kind === 'warning') {
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        return;
+      }
+
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {
+      // Best effort only.
+    }
+  };
+
+  const triggerTapPulse = (slotId: string): void => {
+    const slot = slotById.get(slotId);
+    if (!slot) {
+      return;
+    }
+
+    setSlotTapPulse({
+      x: worldToScreenX(slot.x, viewportRef.current),
+      y: worldToScreenY(slot.y, viewportRef.current),
+      key: Date.now(),
+    });
+
+    slotTapPulseAnim.setValue(0);
+    Animated.timing(slotTapPulseAnim, {
+      toValue: 1,
+      duration: 340,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      setSlotTapPulse(null);
+    });
+  };
+
+  const triggerScreenTapPulse = (x: number, y: number): void => {
+    setScreenTapPulse({
+      x,
+      y,
+      key: Date.now(),
+    });
+
+    screenTapPulseAnim.setValue(0);
+    Animated.timing(screenTapPulseAnim, {
+      toValue: 1,
+      duration: 420,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      setScreenTapPulse(null);
+    });
+  };
+
+  const showLogoHint = (): void => {
+    setRouteInfoOpen(false);
+    setFocusHintVisible(false);
+    focusHintAnim.setValue(0);
+
+    setLogoHintVisible(true);
+    logoHintAnim.stopAnimation();
+    logoHintAnim.setValue(0);
+    Animated.timing(logoHintAnim, {
+      toValue: 1,
+      duration: 300,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+
+    if (logoHintTimerRef.current) {
+      clearTimeout(logoHintTimerRef.current);
+    }
+
+    logoHintTimerRef.current = setTimeout(() => {
+      Animated.timing(logoHintAnim, {
+        toValue: 0,
+        duration: 180,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }).start(() => {
+        setLogoHintVisible(false);
+        logoHintTimerRef.current = null;
+      });
+    }, 2200);
+  };
+
+  const hideLogoHint = (): void => {
+    if (logoHintTimerRef.current) {
+      clearTimeout(logoHintTimerRef.current);
+      logoHintTimerRef.current = null;
+    }
+
+    if (!logoHintVisible) {
+      return;
+    }
+
+    Animated.timing(logoHintAnim, {
+      toValue: 0,
+      duration: 170,
+      easing: Easing.in(Easing.quad),
+      useNativeDriver: true,
+    }).start(() => {
+      setLogoHintVisible(false);
+    });
+  };
+
+  const handleLogoPress = (): void => {
+    if (logoHintVisible) {
+      hideLogoHint();
+      return;
+    }
+
+    showLogoHint();
+  };
+
+  const showExpandedLabel = (slotId: string): void => {
+    setExpandedLabelSlotId(slotId);
+    if (expandedLabelTimerRef.current) {
+      clearTimeout(expandedLabelTimerRef.current);
+    }
+
+    expandedLabelTimerRef.current = setTimeout(() => {
+      setExpandedLabelSlotId((previous) => (previous === slotId ? null : previous));
+      expandedLabelTimerRef.current = null;
+    }, LABEL_EXPAND_DURATION_MS);
+  };
+
+  const clearExpandedLabel = (): void => {
+    if (expandedLabelTimerRef.current) {
+      clearTimeout(expandedLabelTimerRef.current);
+      expandedLabelTimerRef.current = null;
+    }
+    setExpandedLabelSlotId(null);
+  };
+
+  const clearEndpointHoldTimer = (): void => {
+    if (endpointHoldTimerRef.current) {
+      clearTimeout(endpointHoldTimerRef.current);
+      endpointHoldTimerRef.current = null;
+    }
+  };
+
+  const hideDeletePrompt = (): void => {
+    if (deletePromptTimerRef.current) {
+      clearTimeout(deletePromptTimerRef.current);
+      deletePromptTimerRef.current = null;
+    }
+    setDeletePrompt(null);
+  };
+
+  const showDeletePromptForEndpoint = (endpointId: Endpoint['id']): void => {
+    const position = getEndpointWorldPosition(endpointId);
+    if (!position) {
+      return;
+    }
+
+    const screenX = worldToScreenX(position.x, viewportRef.current);
+    const screenY = worldToScreenY(position.y, viewportRef.current);
+    const maxX = Math.max(8, viewportSizeRef.current.width - DELETE_PROMPT_WIDTH - 8);
+    const maxY = Math.max(8, viewportSizeRef.current.height - DELETE_PROMPT_HEIGHT - 8);
+
+    setDeletePrompt({
+      endpointId,
+      x: clamp(screenX - DELETE_PROMPT_WIDTH / 2, 8, maxX),
+      y: clamp(screenY - DELETE_PROMPT_OFFSET_Y, 8, maxY),
+    });
+
+    if (deletePromptTimerRef.current) {
+      clearTimeout(deletePromptTimerRef.current);
+    }
+
+    deletePromptTimerRef.current = setTimeout(() => {
+      setDeletePrompt(null);
+      deletePromptTimerRef.current = null;
+    }, DELETE_PROMPT_HIDE_MS);
+  };
+
+  const showFocusHint = (): void => {
+    setRouteInfoOpen(false);
+    setLogoHintVisible(false);
+    logoHintAnim.setValue(0);
+
+    setFocusHintVisible(true);
+    focusHintAnim.stopAnimation();
+    focusHintAnim.setValue(0);
+    Animated.timing(focusHintAnim, {
+      toValue: 1,
+      duration: 220,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+
+    if (focusHintTimerRef.current) {
+      clearTimeout(focusHintTimerRef.current);
+    }
+
+    focusHintTimerRef.current = setTimeout(() => {
+      Animated.timing(focusHintAnim, {
+        toValue: 0,
+        duration: 160,
+        easing: Easing.in(Easing.quad),
+        useNativeDriver: true,
+      }).start(() => {
+        setFocusHintVisible(false);
+        focusHintTimerRef.current = null;
+      });
+    }, 1600);
+  };
 
   const getLocalPoint = (
     clientX?: number,
@@ -395,6 +758,12 @@ export default function GraphCanvas() {
     return getRoutes(ordered[0].slotId, ordered[1].slotId, adjacency);
   }, [adjacency, endpoints]);
 
+  const routeSignature = useMemo(() => {
+    return routes
+      .map((route) => route.path.join('>'))
+      .join('|');
+  }, [routes]);
+
   const routeEdgeColors = useMemo(() => {
     const colorByEdge = new Map<string, string>();
 
@@ -416,6 +785,37 @@ export default function GraphCanvas() {
 
     return colorByEdge;
   }, [routes]);
+
+  const primaryRouteEdgeIndex = useMemo(() => {
+    const indexByKey = new Map<string, number>();
+    const primary = routes[0];
+    if (!primary || primary.path.length < 2) {
+      return indexByKey;
+    }
+
+    for (let i = 0; i < primary.path.length - 1; i += 1) {
+      indexByKey.set(edgeKey(primary.path[i], primary.path[i + 1]), i);
+    }
+
+    return indexByKey;
+  }, [routes]);
+
+  useEffect(() => {
+    const primaryCount = primaryRouteEdgeIndex.size;
+    routeReveal.stopAnimation();
+    routeReveal.setValue(0);
+
+    if (primaryCount === 0) {
+      return;
+    }
+
+    Animated.timing(routeReveal, {
+      toValue: primaryCount,
+      duration: Math.max(520, primaryCount * 180),
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [primaryRouteEdgeIndex, routeReveal, routeSignature]);
 
   const highlightedSlotIds = useMemo(() => {
     const ids = new Set<string>();
@@ -441,42 +841,156 @@ export default function GraphCanvas() {
     return JSON.stringify(exportLayout(graphLayout, slots, edges, defaultCenterSlotId), null, 2);
   }, [defaultCenterSlotId, edges, slots]);
 
-  const visibleLabelIds = useMemo(() => {
-    if (editLayoutMode) {
-      return new Set(slots.map((slot) => slot.id));
+  const labelPresentationById = useMemo(() => {
+    const presentation = new Map<string, LabelPresentation>();
+    const nearMaxZoom = zoomLimits.maxScale > 0
+      && (viewport.scale / zoomLimits.maxScale) >= 0.9;
+    const slotScreenById = new Map<string, { x: number; y: number; radius: number }>();
+
+    for (const slot of slots) {
+      const radius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
+      slotScreenById.set(slot.id, {
+        x: worldToScreenX(slot.x, viewport),
+        y: worldToScreenY(slot.y, viewport),
+        radius,
+      });
     }
 
+    for (const slot of slots) {
+      let emphasized = endpointSlotIds.has(slot.id)
+        || highlightedSlotIds.has(slot.id)
+        || expandedLabelSlotId === slot.id
+        || nearMaxZoom;
+
+      if (!emphasized && !editLayoutMode && slot.node.type !== 'intersection') {
+        const expandedLabel = getLabelPresentation(slot, editLayoutMode, true, false);
+        const slotScreen = slotScreenById.get(slot.id);
+
+        if (expandedLabel && slotScreen && viewportSize.width > 0 && viewportSize.height > 0) {
+          const maxLabelLeft = Math.max(
+            LABEL_VIEWPORT_MARGIN,
+            viewportSize.width - expandedLabel.width - LABEL_VIEWPORT_MARGIN,
+          );
+          const maxLabelTop = Math.max(
+            LABEL_VIEWPORT_MARGIN,
+            viewportSize.height - expandedLabel.height - LABEL_VIEWPORT_MARGIN,
+          );
+
+          const preferredTopBelow = slotScreen.y + slotScreen.radius + 7;
+          const preferredTopAbove = slotScreen.y - slotScreen.radius - expandedLabel.height - 5;
+          const belowTop = clamp(preferredTopBelow, LABEL_VIEWPORT_MARGIN, maxLabelTop);
+          const aboveTop = clamp(preferredTopAbove, LABEL_VIEWPORT_MARGIN, maxLabelTop);
+          const useAboveFirst = preferredTopBelow + expandedLabel.height > maxLabelTop;
+          const top = useAboveFirst ? aboveTop : belowTop;
+          const left = clamp(
+            slotScreen.x - expandedLabel.width / 2,
+            LABEL_VIEWPORT_MARGIN,
+            maxLabelLeft,
+          );
+          const right = left + expandedLabel.width;
+          const bottom = top + expandedLabel.height;
+          const blockPadding = slotScreen.radius + 4;
+
+          const blockedByNeighbor = slots.some((other) => {
+            if (other.id === slot.id) {
+              return false;
+            }
+
+            const otherScreen = slotScreenById.get(other.id);
+            if (!otherScreen) {
+              return false;
+            }
+
+            return (
+              otherScreen.x >= left - blockPadding
+              && otherScreen.x <= right + blockPadding
+              && otherScreen.y >= top - blockPadding
+              && otherScreen.y <= bottom + blockPadding
+            );
+          });
+
+          if (!blockedByNeighbor) {
+            emphasized = true;
+          }
+        }
+      }
+
+      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom);
+      if (label) {
+        presentation.set(slot.id, label);
+      }
+    }
+
+    return presentation;
+  }, [
+    editLayoutMode,
+    endpointSlotIds,
+    expandedLabelSlotId,
+    highlightedSlotIds,
+    slots,
+    viewport,
+    viewportSize.height,
+    viewportSize.width,
+    zoomLimits.maxScale,
+  ]);
+
+  const labelLayoutById = useMemo(() => {
+    const layouts = new Map<string, LabelLayout>();
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
-      return new Set(slots.map((slot) => slot.id));
+      return layouts;
     }
 
     const lowZoom = viewport.scale < 0.95;
     const candidates: LabelCandidate[] = [];
 
     for (const slot of slots) {
+      const presentation = labelPresentationById.get(slot.id);
+      if (!presentation) {
+        continue;
+      }
+
       const isEndpoint = endpointSlotIds.has(slot.id);
       const isHighlighted = highlightedSlotIds.has(slot.id);
-      const keepTypeAtLowZoom = slot.node.type === 'building' || isEndpoint || isHighlighted;
-      if (lowZoom && !keepTypeAtLowZoom) {
+      const isExpanded = expandedLabelSlotId === slot.id;
+      const keepTypeAtLowZoom = slot.node.type === 'building' || isEndpoint || isHighlighted || isExpanded;
+      if (!editLayoutMode && lowZoom && !keepTypeAtLowZoom) {
         continue;
       }
 
       const slotScreenX = worldToScreenX(slot.x, viewport);
       const slotScreenY = worldToScreenY(slot.y, viewport);
       const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
-      const left = slotScreenX - LABEL_WIDTH / 2;
-      const top = slotScreenY + slotRadius + 6;
-      const right = left + LABEL_WIDTH;
-      const bottom = top + LABEL_HEIGHT;
 
-      if (
-        right < -LABEL_VIEWPORT_MARGIN
-        || left > viewportSize.width + LABEL_VIEWPORT_MARGIN
-        || bottom < -LABEL_VIEWPORT_MARGIN
-        || top > viewportSize.height + LABEL_VIEWPORT_MARGIN
-      ) {
+      const slotAnchorVisible = (
+        slotScreenX >= -slotRadius
+        && slotScreenX <= viewportSize.width + slotRadius
+        && slotScreenY >= -slotRadius
+        && slotScreenY <= viewportSize.height + slotRadius
+      );
+
+      if (!slotAnchorVisible) {
         continue;
       }
+
+      const maxLabelLeft = Math.max(
+        LABEL_VIEWPORT_MARGIN,
+        viewportSize.width - presentation.width - LABEL_VIEWPORT_MARGIN,
+      );
+      const maxLabelTop = Math.max(
+        LABEL_VIEWPORT_MARGIN,
+        viewportSize.height - presentation.height - LABEL_VIEWPORT_MARGIN,
+      );
+      const preferredTopBelow = slotScreenY + slotRadius + 7;
+      const preferredTopAbove = slotScreenY - slotRadius - presentation.height - 5;
+      const belowTop = clamp(preferredTopBelow, LABEL_VIEWPORT_MARGIN, maxLabelTop);
+      const aboveTop = clamp(preferredTopAbove, LABEL_VIEWPORT_MARGIN, maxLabelTop);
+      const useAboveFirst = preferredTopBelow + presentation.height > maxLabelTop;
+      const top = useAboveFirst ? aboveTop : belowTop;
+      const alternateTop = useAboveFirst ? belowTop : aboveTop;
+      const left = clamp(slotScreenX - presentation.width / 2, LABEL_VIEWPORT_MARGIN, maxLabelLeft);
+      const right = left + presentation.width;
+      const bottom = top + presentation.height;
+      const alternateBottom = alternateTop + presentation.height;
 
       let priority = 0;
       if (isEndpoint) {
@@ -498,8 +1012,20 @@ export default function GraphCanvas() {
         top,
         right,
         bottom,
+        alternateTop: Math.abs(alternateTop - top) > 1 ? alternateTop : null,
+        alternateBottom: Math.abs(alternateTop - top) > 1 ? alternateBottom : null,
         priority,
       });
+    }
+
+    if (editLayoutMode) {
+      for (const candidate of candidates) {
+        layouts.set(candidate.id, {
+          left: candidate.left,
+          top: candidate.top,
+        });
+      }
+      return layouts;
     }
 
     candidates.sort((a, b) => {
@@ -513,20 +1039,49 @@ export default function GraphCanvas() {
     });
 
     const accepted: LabelCandidate[] = [];
-    const visible = new Set<string>();
-
     for (const candidate of candidates) {
-      const collides = accepted.some((existing) => labelsOverlap(candidate, existing));
-      if (collides) {
+      let placed: LabelCandidate | null = candidate;
+      const collidesPrimary = accepted.some((existing) => labelsOverlap(candidate, existing));
+
+      if (collidesPrimary) {
+        if (candidate.alternateTop === null || candidate.alternateBottom === null) {
+          placed = null;
+        } else {
+          const alternateCandidate: LabelCandidate = {
+            ...candidate,
+            top: candidate.alternateTop,
+            bottom: candidate.alternateBottom,
+            alternateTop: null,
+            alternateBottom: null,
+          };
+          const collidesAlternate = accepted.some((existing) => labelsOverlap(alternateCandidate, existing));
+          placed = collidesAlternate ? null : alternateCandidate;
+        }
+      }
+
+      if (!placed) {
         continue;
       }
 
-      accepted.push(candidate);
-      visible.add(candidate.id);
+      accepted.push(placed);
+      layouts.set(placed.id, {
+        left: placed.left,
+        top: placed.top,
+      });
     }
 
-    return visible;
-  }, [editLayoutMode, endpointSlotIds, highlightedSlotIds, slots, viewport, viewportSize.height, viewportSize.width]);
+    return layouts;
+  }, [
+    editLayoutMode,
+    expandedLabelSlotId,
+    endpointSlotIds,
+    highlightedSlotIds,
+    labelPresentationById,
+    slots,
+    viewport,
+    viewportSize.height,
+    viewportSize.width,
+  ]);
 
   useEffect(() => {
     if (viewportSize.width > 0 && viewportSize.height > 0) {
@@ -648,6 +1203,11 @@ export default function GraphCanvas() {
   }, [bounds, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
 
   useEffect(() => {
+    if (!EDIT_LAYOUT_ENABLED && editLayoutMode) {
+      setEditLayoutMode(false);
+      return;
+    }
+
     if (!editLayoutMode) {
       setEdgeEditorIndex(null);
       return;
@@ -705,11 +1265,67 @@ export default function GraphCanvas() {
       if (blockedTimerRef.current) {
         clearTimeout(blockedTimerRef.current);
       }
+      if (logoHintTimerRef.current) {
+        clearTimeout(logoHintTimerRef.current);
+      }
+      if (focusHintTimerRef.current) {
+        clearTimeout(focusHintTimerRef.current);
+      }
+      if (expandedLabelTimerRef.current) {
+        clearTimeout(expandedLabelTimerRef.current);
+      }
+      if (endpointHoldTimerRef.current) {
+        clearTimeout(endpointHoldTimerRef.current);
+      }
+      if (deletePromptTimerRef.current) {
+        clearTimeout(deletePromptTimerRef.current);
+      }
     };
   }, []);
 
+  useEffect(() => {
+    introAnim.setValue(0);
+    Animated.timing(introAnim, {
+      toValue: 1,
+      duration: 420,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [introAnim]);
+
+  useEffect(() => {
+    Animated.timing(toolsDockAnim, {
+      toValue: toolsDockOpen ? 1 : 0,
+      duration: 240,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [toolsDockAnim, toolsDockOpen]);
+
+  useEffect(() => {
+    if (routes.length === 0) {
+      routeGlow.setValue(0);
+      return;
+    }
+
+    routeGlow.setValue(0);
+    Animated.timing(routeGlow, {
+      toValue: 1,
+      duration: 680,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+  }, [routeGlow, routeSignature]);
+
+  useEffect(() => {
+    if (draggingEndpoint && toolsDockOpen && !toolsPinned) {
+      setToolsDockOpen(false);
+    }
+  }, [draggingEndpoint, toolsDockOpen, toolsPinned]);
+
   const triggerBlockedFeedback = (message: string): void => {
     setBlockedMessage(message);
+    triggerHaptic('warning');
 
     if (blockedTimerRef.current) {
       clearTimeout(blockedTimerRef.current);
@@ -821,18 +1437,25 @@ export default function GraphCanvas() {
       return;
     }
 
+    clearExpandedLabel();
+    hideDeletePrompt();
+
     const occupied = endpointsRef.current.some((endpoint) => endpoint.slotId === slotId);
     if (occupied) {
       return;
     }
 
     if (endpointsRef.current.length === 0) {
+      triggerTapPulse(slotId);
+      triggerHaptic('light');
       setEndpoints([{ id: 'start', slotId }]);
       return;
     }
 
     if (endpointsRef.current.length === 1) {
       const existing = endpointsRef.current[0];
+      triggerTapPulse(slotId);
+      triggerHaptic('light');
       setEndpoints(endpointOrder([
         { id: existing.id === 'end' ? 'end' : 'start', slotId: existing.slotId },
         { id: existing.id === 'start' ? 'end' : 'start', slotId },
@@ -846,13 +1469,6 @@ export default function GraphCanvas() {
   const finalizeEndpointDrop = (): void => {
     const drag = draggingEndpointRef.current;
     if (!drag) {
-      return;
-    }
-
-    if (drag.overDeleteZone) {
-      setEndpoints((previous) => previous.filter((endpoint) => endpoint.id !== drag.endpointId));
-      setDraggingEndpoint(null);
-      draggingEndpointRef.current = null;
       return;
     }
 
@@ -886,6 +1502,7 @@ export default function GraphCanvas() {
 
     setDraggingEndpoint(null);
     draggingEndpointRef.current = null;
+    triggerHaptic('light');
   };
 
   const startPinch = (first: TouchPoint, second: TouchPoint): void => {
@@ -904,6 +1521,9 @@ export default function GraphCanvas() {
 
   const onResponderGrant = (event: GestureResponderEvent): void => {
     const touches = getInteractionPoints(event);
+    clearExpandedLabel();
+    clearEndpointHoldTimer();
+    hideDeletePrompt();
 
     if (touches.length >= 2) {
       startPinch(touches[0], touches[1]);
@@ -920,26 +1540,32 @@ export default function GraphCanvas() {
     if (endpoint && !editLayoutRef.current) {
       const slot = slotById.get(endpoint.slotId);
       if (slot) {
-        const nextDrag: DraggingEndpointState = {
-          endpointId: endpoint.id,
-          worldX: slot.x,
-          worldY: slot.y,
-          overDeleteZone: false,
-          targetSlotId: null,
-        };
-        setDraggingEndpoint(nextDrag);
-        draggingEndpointRef.current = nextDrag;
-
         interactionRef.current = {
           kind: 'endpoint-drag',
           endpointId: endpoint.id,
           originSlotId: endpoint.slotId,
+          startX: touch.x,
+          startY: touch.y,
+          moved: false,
         };
+
+        endpointHoldTimerRef.current = setTimeout(() => {
+          const currentInteraction = interactionRef.current;
+          if (
+            currentInteraction.kind === 'endpoint-drag'
+            && currentInteraction.endpointId === endpoint.id
+            && !currentInteraction.moved
+            && !draggingEndpointRef.current
+          ) {
+            showDeletePromptForEndpoint(endpoint.id);
+          }
+          endpointHoldTimerRef.current = null;
+        }, HOLD_TO_DELETE_MS);
         return;
       }
     }
 
-    if (editLayoutRef.current) {
+    if (EDIT_LAYOUT_ENABLED && editLayoutRef.current) {
       const slotHit = getSlotAtWorldPosition(worldX, worldY, dragRadiusWorld);
       if (slotHit) {
         interactionRef.current = {
@@ -950,7 +1576,7 @@ export default function GraphCanvas() {
       }
     }
 
-    const edgeHitIndex = editLayoutRef.current
+    const edgeHitIndex = EDIT_LAYOUT_ENABLED && editLayoutRef.current
       ? getEdgeHitAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale)
       : null;
     const tapHit = getSlotAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale);
@@ -958,6 +1584,7 @@ export default function GraphCanvas() {
       kind: 'pan',
       startX: touch.x,
       startY: touch.y,
+      startedAt: Date.now(),
       startTx: currentViewport.tx,
       startTy: currentViewport.ty,
       moved: false,
@@ -996,22 +1623,49 @@ export default function GraphCanvas() {
     const touch = touches[0];
 
     if (currentInteraction.kind === 'endpoint-drag') {
+      const dx = touch.x - currentInteraction.startX;
+      const dy = touch.y - currentInteraction.startY;
+      const moved = currentInteraction.moved || Math.abs(dx) > TAP_MOVE_THRESHOLD || Math.abs(dy) > TAP_MOVE_THRESHOLD;
+
+      if (moved !== currentInteraction.moved) {
+        interactionRef.current = {
+          ...currentInteraction,
+          moved,
+        };
+      }
+
+      if (!moved) {
+        return;
+      }
+
+      clearEndpointHoldTimer();
+      hideDeletePrompt();
+
       const currentViewport = viewportRef.current;
       const worldX = screenToWorldX(touch.x, currentViewport);
       const worldY = screenToWorldY(touch.y, currentViewport);
       const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
       const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
-      const deleteCenterX = viewportSizeRef.current.width - (DELETE_TARGET_MARGIN + DELETE_TARGET_SIZE / 2);
-      const deleteCenterY = viewportSizeRef.current.height - (12 + bottomInset + DELETE_TARGET_SIZE / 2);
-      const deleteRadius = DELETE_TARGET_SIZE * 0.62;
-      const overDeleteZone = distance(touch.x, touch.y, deleteCenterX, deleteCenterY) <= deleteRadius;
+
+      if (!draggingEndpointRef.current) {
+        const originSlot = slotById.get(currentInteraction.originSlotId);
+        if (originSlot) {
+          const initialDrag: DraggingEndpointState = {
+            endpointId: currentInteraction.endpointId,
+            worldX: originSlot.x,
+            worldY: originSlot.y,
+            targetSlotId: currentInteraction.originSlotId,
+          };
+          setDraggingEndpoint(initialDrag);
+          draggingEndpointRef.current = initialDrag;
+        }
+      }
 
       const nextDrag: DraggingEndpointState = {
         endpointId: currentInteraction.endpointId,
         worldX,
         worldY,
-        overDeleteZone,
-        targetSlotId: overDeleteZone ? null : (slotHit?.slot.id ?? null),
+        targetSlotId: slotHit?.slot.id ?? null,
       };
 
       setDraggingEndpoint(nextDrag);
@@ -1064,6 +1718,7 @@ export default function GraphCanvas() {
         kind: 'pan',
         startX: touch.x,
         startY: touch.y,
+        startedAt: Date.now(),
         startTx: currentViewport.tx,
         startTy: currentViewport.ty,
         moved: false,
@@ -1077,10 +1732,21 @@ export default function GraphCanvas() {
     const currentInteraction = interactionRef.current;
 
     if (currentInteraction.kind === 'endpoint-drag') {
-      finalizeEndpointDrop();
+      clearEndpointHoldTimer();
+      if (draggingEndpointRef.current) {
+        finalizeEndpointDrop();
+      }
     }
 
     if (currentInteraction.kind === 'pan' && !currentInteraction.moved) {
+      const isLongPress = Date.now() - currentInteraction.startedAt >= LABEL_LONG_PRESS_MS;
+      if (!editLayoutRef.current && currentInteraction.slotTapCandidateId && isLongPress) {
+        showExpandedLabel(currentInteraction.slotTapCandidateId);
+        interactionRef.current = { kind: 'idle' };
+        return;
+      }
+
+      triggerScreenTapPulse(currentInteraction.startX, currentInteraction.startY);
       if (editLayoutRef.current && currentInteraction.edgeTapCandidateIndex !== null) {
         setEdgeEditorIndex(currentInteraction.edgeTapCandidateIndex);
       } else if (currentInteraction.slotTapCandidateId) {
@@ -1092,6 +1758,7 @@ export default function GraphCanvas() {
   };
 
   const onResponderTerminate = (): void => {
+    clearEndpointHoldTimer();
     if (interactionRef.current.kind === 'endpoint-drag') {
       setDraggingEndpoint(null);
       draggingEndpointRef.current = null;
@@ -1168,50 +1835,147 @@ export default function GraphCanvas() {
     }));
   };
 
+  const swapEndpoints = (): void => {
+    setEndpoints((previous) => {
+      if (previous.length !== 2) {
+        return previous;
+      }
+
+      const start = previous.find((endpoint) => endpoint.id === 'start');
+      const end = previous.find((endpoint) => endpoint.id === 'end');
+      if (!start || !end) {
+        return previous;
+      }
+
+      triggerHaptic('light');
+      return [
+        { id: 'start', slotId: end.slotId },
+        { id: 'end', slotId: start.slotId },
+      ];
+    });
+  };
+
+  const clearEndpoints = (): void => {
+    setEndpoints([]);
+    setDraggingEndpoint(null);
+    draggingEndpointRef.current = null;
+    hideDeletePrompt();
+    triggerHaptic('success');
+  };
+
+  const deleteEndpointById = (endpointId: Endpoint['id']): void => {
+    setEndpoints((previous) => previous.filter((endpoint) => endpoint.id !== endpointId));
+    hideDeletePrompt();
+    triggerHaptic('success');
+  };
+
+  const runToolAction = (action: () => void): void => {
+    action();
+    if (!toolsPinned) {
+      setToolsDockOpen(false);
+    }
+  };
+
+  const endpointIndicators = useMemo<EndpointIndicator[]>(() => {
+    if (viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return [];
+    }
+
+    const margin = 26;
+    const indicators: EndpointIndicator[] = [];
+    const ordered = endpointOrder(endpoints);
+
+    for (const endpoint of ordered) {
+      const slot = slotById.get(endpoint.slotId);
+      if (!slot) {
+        continue;
+      }
+
+      const sx = worldToScreenX(slot.x, viewport);
+      const sy = worldToScreenY(slot.y, viewport);
+      const offscreen = sx < margin || sx > viewportSize.width - margin || sy < margin || sy > viewportSize.height - margin;
+
+      if (!offscreen) {
+        continue;
+      }
+
+      const x = clamp(sx, margin, viewportSize.width - margin);
+      const y = clamp(sy, margin, viewportSize.height - margin);
+      const angle = Math.atan2(sy - y, sx - x);
+
+      indicators.push({
+        id: endpoint.id,
+        slotId: endpoint.slotId,
+        x,
+        y,
+        angle,
+      });
+    }
+
+    return indicators;
+  }, [endpoints, slotById, viewport, viewportSize.height, viewportSize.width]);
+
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
+  const toolsDockTranslateX = toolsDockAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [18, 0],
+  });
+  const introTranslateY = introAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [16, 0],
+  });
+  const routeGlowOpacity = routeGlow.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.35, 1],
+  });
+  const topControlsTop = 10 + topInset;
+  const topControlsHeight = 50;
+  const blockedToastTop = topControlsTop + topControlsHeight + 8;
+  const slotTapPulseOpacity = slotTapPulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.45, 0],
+  });
+  const slotTapPulseScale = slotTapPulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.45, 2.5],
+  });
+  const screenTapPulseOpacity = screenTapPulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.36, 0],
+  });
+  const screenTapPulseScale = screenTapPulseAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.5, 2],
+  });
+  const logoHintOpacity = logoHintAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const logoHintTranslateX = logoHintAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-18, 0],
+  });
+  const focusHintOpacity = focusHintAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 1],
+  });
+  const focusHintTranslateX = focusHintAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [10, 0],
+  });
 
   return (
-    <Animated.View style={[styles.screen, { transform: [{ translateX: shakeX }] }]}>
+    <Animated.View
+      style={[
+        styles.screen,
+        {
+          opacity: introAnim,
+          transform: [{ translateY: introTranslateY }],
+        },
+      ]}
+    >
       <SafeAreaView style={styles.screen}>
       <StatusBar barStyle="light-content" translucent={false} backgroundColor="#121a26" />
-      <View style={[styles.header, { paddingTop: 14 + topInset }]}>
-        <View style={styles.headerLeft}>
-          <Text style={styles.title}>Tunnel Navigator</Text>
-          <Text style={styles.subtitle}>
-            {editLayoutMode
-              ? 'Layout mode: drag slots, export graph + layout'
-              : endpoints.length === 2
-                ? `${routes.length} shortest route${routes.length === 1 ? '' : 's'} highlighted`
-                : 'Tap empty slots to place up to two endpoints'}
-          </Text>
-        </View>
-
-        <View style={styles.headerActions}>
-          <Pressable
-            style={[styles.headerButton, editLayoutMode ? styles.headerButtonActive : null]}
-            onPress={() => setEditLayoutMode((previous) => !previous)}
-          >
-            <Text style={[styles.headerButtonText, editLayoutMode ? styles.headerButtonTextActive : null]}>
-              {editLayoutMode ? 'Done' : 'Edit layout'}
-            </Text>
-          </Pressable>
-
-          {editLayoutMode ? (
-            <Pressable
-              style={[styles.headerButton, styles.headerButtonSpacer]}
-              onPress={() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length)}
-            >
-              <Text style={styles.headerButtonText}>Grid {gridSize}</Text>
-            </Pressable>
-          ) : null}
-
-          {editLayoutMode ? (
-            <Pressable style={[styles.headerButton, styles.headerButtonSpacer]} onPress={() => setExportVisible(true)}>
-              <Text style={styles.headerButtonText}>Export</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      </View>
 
       <View
         ref={canvasRef}
@@ -1220,102 +1984,137 @@ export default function GraphCanvas() {
           const { width, height } = event.nativeEvent.layout;
           setViewportSize({ width, height });
         }}
-        onStartShouldSetResponder={() => true}
-        onMoveShouldSetResponder={() => true}
-        onResponderGrant={onResponderGrant}
-        onResponderMove={onResponderMove}
-        onResponderRelease={onResponderRelease}
-        onResponderTerminate={onResponderTerminate}
-        onResponderTerminationRequest={() => false}
       >
         <View style={styles.canvasBackdrop} />
 
-        <View pointerEvents="none" style={styles.sceneLayer}>
-          {editLayoutMode ? (
-            <>
-              {gridModel.xValues.map((x) => (
-                <View
-                  key={`grid-x-${x}`}
-                  style={[
-                    styles.gridLineVertical,
-                    {
-                      left: worldToScreenX(x, viewport),
-                      top: worldToScreenY(gridModel.minY, viewport),
-                      height: Math.max(1, (gridModel.maxY - gridModel.minY) * viewport.scale),
-                    },
-                  ]}
-                />
-              ))}
-              {gridModel.yValues.map((y) => (
-                <View
-                  key={`grid-y-${y}`}
-                  style={[
-                    styles.gridLineHorizontal,
-                    {
-                      top: worldToScreenY(y, viewport),
-                      left: worldToScreenX(gridModel.minX, viewport),
-                      width: Math.max(1, (gridModel.maxX - gridModel.minX) * viewport.scale),
-                    },
-                  ]}
-                />
-              ))}
-              {gridModel.xValues.map((x) => (
-                <React.Fragment key={`grid-p-${x}`}>
-                  {gridModel.yValues.map((y) => (
-                    <View
-                      key={`grid-p-${x}-${y}`}
+        <View
+          style={styles.touchLayer}
+          onStartShouldSetResponder={() => true}
+          onMoveShouldSetResponder={() => true}
+          onResponderGrant={onResponderGrant}
+          onResponderMove={onResponderMove}
+          onResponderRelease={onResponderRelease}
+          onResponderTerminate={onResponderTerminate}
+          onResponderTerminationRequest={() => false}
+        >
+          <View pointerEvents="none" style={styles.sceneLayer}>
+            {editLayoutMode ? (
+              <>
+                {gridModel.xValues.map((x) => (
+                  <View
+                    key={`grid-x-${x}`}
+                    style={[
+                      styles.gridLineVertical,
+                      {
+                        left: worldToScreenX(x, viewport),
+                        top: worldToScreenY(gridModel.minY, viewport),
+                        height: Math.max(1, (gridModel.maxY - gridModel.minY) * viewport.scale),
+                      },
+                    ]}
+                  />
+                ))}
+                {gridModel.yValues.map((y) => (
+                  <View
+                    key={`grid-y-${y}`}
+                    style={[
+                      styles.gridLineHorizontal,
+                      {
+                        top: worldToScreenY(y, viewport),
+                        left: worldToScreenX(gridModel.minX, viewport),
+                        width: Math.max(1, (gridModel.maxX - gridModel.minX) * viewport.scale),
+                      },
+                    ]}
+                  />
+                ))}
+                {gridModel.xValues.map((x) => (
+                  <React.Fragment key={`grid-p-${x}`}>
+                    {gridModel.yValues.map((y) => (
+                      <View
+                        key={`grid-p-${x}-${y}`}
+                        style={[
+                          styles.gridIntersection,
+                          {
+                            left: worldToScreenX(x, viewport) - 1.5,
+                            top: worldToScreenY(y, viewport) - 1.5,
+                          },
+                        ]}
+                      />
+                    ))}
+                  </React.Fragment>
+                ))}
+              </>
+            ) : null}
+
+            {edges.map((edge, index) => {
+              const key = edgeKey(edge.from, edge.to);
+              const routeColor = routeEdgeColors.get(key);
+              const isHighlighted = Boolean(routeColor);
+              const revealIndex = primaryRouteEdgeIndex.get(key);
+              const segments = getEdgeSegments(edge, slotById);
+
+              return segments.map((segment, segmentIndex) => {
+                const x1 = worldToScreenX(segment.x1, viewport);
+                const y1 = worldToScreenY(segment.y1, viewport);
+                const x2 = worldToScreenX(segment.x2, viewport);
+                const y2 = worldToScreenY(segment.y2, viewport);
+                const dx = x2 - x1;
+                const dy = y2 - y1;
+                const length = Math.sqrt(dx * dx + dy * dy);
+                if (length <= 0.001) {
+                  return null;
+                }
+
+                const angle = Math.atan2(dy, dx);
+                const baseStyle = {
+                  left: (x1 + x2) / 2 - length / 2,
+                  top: (y1 + y2) / 2 - (isHighlighted ? 2 : 1),
+                  width: length,
+                  height: isHighlighted ? 4 : 2,
+                  backgroundColor: routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
+                  transform: [{ rotate: `${angle}rad` }],
+                };
+
+                if (isHighlighted) {
+                  const revealOpacity = revealIndex !== undefined
+                    ? routeReveal.interpolate({
+                      inputRange: [revealIndex - 0.8, revealIndex + 1.4],
+                      outputRange: [0.04, 1],
+                      extrapolate: 'clamp',
+                    })
+                    : 1;
+
+                  const highlightedOpacity = revealIndex !== undefined
+                    ? Animated.multiply(revealOpacity, routeGlowOpacity)
+                    : routeGlowOpacity;
+
+                  return (
+                    <Animated.View
+                      key={`${edge.from}-${edge.to}-${index}-${segmentIndex}`}
                       style={[
-                        styles.gridIntersection,
+                        styles.edge,
+                        baseStyle,
                         {
-                          left: worldToScreenX(x, viewport) - 1.5,
-                          top: worldToScreenY(y, viewport) - 1.5,
+                          opacity: highlightedOpacity,
                         },
                       ]}
                     />
-                  ))}
-                </React.Fragment>
-              ))}
-            </>
-          ) : null}
+                  );
+                }
 
-          {edges.map((edge, index) => {
-            const routeColor = routeEdgeColors.get(edgeKey(edge.from, edge.to));
-            const isHighlighted = Boolean(routeColor);
-            const segments = getEdgeSegments(edge, slotById);
-
-            return segments.map((segment, segmentIndex) => {
-              const x1 = worldToScreenX(segment.x1, viewport);
-              const y1 = worldToScreenY(segment.y1, viewport);
-              const x2 = worldToScreenX(segment.x2, viewport);
-              const y2 = worldToScreenY(segment.y2, viewport);
-              const dx = x2 - x1;
-              const dy = y2 - y1;
-              const length = Math.sqrt(dx * dx + dy * dy);
-              if (length <= 0.001) {
-                return null;
-              }
-
-              const angle = Math.atan2(dy, dx);
-
-              return (
-                <View
-                  key={`${edge.from}-${edge.to}-${index}-${segmentIndex}`}
-                  style={[
-                    styles.edge,
-                    {
-                      left: (x1 + x2) / 2 - length / 2,
-                      top: (y1 + y2) / 2 - (isHighlighted ? 2 : 1),
-                      width: length,
-                      height: isHighlighted ? 4 : 2,
-                      backgroundColor: routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
-                      opacity: isHighlighted ? 1 : 0.84,
-                      transform: [{ rotate: `${angle}rad` }],
-                    },
-                  ]}
-                />
-              );
-            });
-          })}
+                return (
+                  <View
+                    key={`${edge.from}-${edge.to}-${index}-${segmentIndex}`}
+                    style={[
+                      styles.edge,
+                      baseStyle,
+                      {
+                        opacity: 0.84,
+                      },
+                    ]}
+                  />
+                );
+              });
+            })}
 
           {slots.map((slot) => {
             const highlighted = highlightedSlotIds.has(slot.id);
@@ -1324,146 +2123,474 @@ export default function GraphCanvas() {
             const slotScreenX = worldToScreenX(slot.x, viewport);
             const slotScreenY = worldToScreenY(slot.y, viewport);
             const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
+            const labelLayout = labelLayoutById.get(slot.id);
+            const labelPresentation = labelPresentationById.get(slot.id);
 
             return (
               <View
                 key={slot.id}
                 style={[
-                  styles.slotWrap,
-                  {
-                    left: slotScreenX - slotRadius,
-                    top: slotScreenY - slotRadius,
-                    width: slotRadius * 2,
-                  },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.slot,
+                    styles.slotWrap,
                     {
+                      left: slotScreenX - slotRadius,
+                      top: slotScreenY - slotRadius,
                       width: slotRadius * 2,
-                      height: slotRadius * 2,
-                      borderRadius: slotRadius,
                     },
-                    { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
-                    isExitOnly ? styles.slotExitOnly : null,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.slot,
+                      {
+                        width: slotRadius * 2,
+                        height: slotRadius * 2,
+                        borderRadius: slotRadius,
+                      },
+                      { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
+                      isExitOnly ? styles.slotExitOnly : null,
                     highlighted ? styles.slotHighlighted : null,
                     isDropTarget ? styles.slotDropPreview : null,
                   ]}
                 />
-                {visibleLabelIds.has(slot.id) ? (
-                  <Text numberOfLines={editLayoutMode ? 3 : 2} style={styles.slotLabel}>
-                    {slot.node.label}
-                    {editLayoutMode ? `\n${Math.round(slot.x)}, ${Math.round(slot.y)}` : ''}
+                {labelLayout && labelPresentation ? (
+                  <Text
+                    numberOfLines={labelPresentation.lines}
+                    ellipsizeMode="tail"
+                    style={[
+                      styles.slotLabel,
+                      {
+                        width: labelPresentation.width,
+                        minHeight: labelPresentation.height,
+                        left: labelLayout.left - (slotScreenX - slotRadius),
+                        top: labelLayout.top - (slotScreenY - slotRadius),
+                      },
+                    ]}
+                  >
+                    {labelPresentation.text}
                   </Text>
                 ) : null}
               </View>
             );
           })}
 
-          {endpointOrder(endpoints).map((endpoint) => {
-            const baseSlot = slotById.get(endpoint.slotId);
-            if (!baseSlot) {
-              return null;
-            }
+            {endpointOrder(endpoints).map((endpoint) => {
+              const baseSlot = slotById.get(endpoint.slotId);
+              if (!baseSlot) {
+                return null;
+              }
 
-            const drag = draggingEndpoint?.endpointId === endpoint.id ? draggingEndpoint : null;
-            const x = drag ? drag.worldX : baseSlot.x;
-            const y = drag ? drag.worldY : baseSlot.y;
-            const isStart = endpoint.id === 'start';
-            const endpointScreenX = worldToScreenX(x, viewport);
-            const endpointScreenY = worldToScreenY(y, viewport);
-            const endpointRadius = clamp(ENDPOINT_RADIUS * viewport.scale, 11, 40);
+              const drag = draggingEndpoint?.endpointId === endpoint.id ? draggingEndpoint : null;
+              const x = drag ? drag.worldX : baseSlot.x;
+              const y = drag ? drag.worldY : baseSlot.y;
+              const isStart = endpoint.id === 'start';
+              const endpointScreenX = worldToScreenX(x, viewport);
+              const endpointScreenY = worldToScreenY(y, viewport);
+              const endpointRadius = clamp(ENDPOINT_RADIUS * viewport.scale, 11, 40);
 
-            return (
+              return (
+                <View
+                  key={endpoint.id}
+                  style={[
+                    styles.endpointWrap,
+                    {
+                      left: endpointScreenX - endpointRadius,
+                      top: endpointScreenY - endpointRadius,
+                      width: endpointRadius * 2,
+                      height: endpointRadius * 2,
+                      opacity: drag ? 0.94 : 1,
+                      transform: [{ scale: drag ? 1.07 : 1 }],
+                    },
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.endpoint,
+                      {
+                        width: endpointRadius * 2,
+                        height: endpointRadius * 2,
+                        borderRadius: endpointRadius,
+                      },
+                      isStart ? styles.endpointStart : styles.endpointEnd,
+                    ]}
+                  >
+                    <Text style={styles.endpointText}>{isStart ? 'A' : 'B'}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+
+          {screenTapPulse ? (
+            <Animated.View
+              pointerEvents="none"
+              key={`screen-pulse-${screenTapPulse.key}`}
+              style={[
+                styles.screenTapPulse,
+                {
+                  left: screenTapPulse.x - 30,
+                  top: screenTapPulse.y - 30,
+                  opacity: screenTapPulseOpacity,
+                  transform: [{ scale: screenTapPulseScale }],
+                },
+              ]}
+            />
+          ) : null}
+
+          {slotTapPulse ? (
+            <Animated.View
+              pointerEvents="none"
+              key={`slot-pulse-${slotTapPulse.key}`}
+              style={[
+                styles.tapPulse,
+                {
+                  left: slotTapPulse.x - 18,
+                  top: slotTapPulse.y - 18,
+                  opacity: slotTapPulseOpacity,
+                  transform: [{ scale: slotTapPulseScale }],
+                },
+              ]}
+            />
+          ) : null}
+        </View>
+
+        {endpointIndicators.map((indicator) => {
+          const isStart = indicator.id === 'start';
+          return (
+            <Pressable
+              key={`indicator-${indicator.id}`}
+              hitSlop={10}
+              style={[
+                styles.endpointIndicator,
+                {
+                  left: indicator.x - 22,
+                  top: indicator.y - 22,
+                },
+              ]}
+              onPress={() => {
+                triggerHaptic('light');
+                centerOnSlot(indicator.slotId);
+              }}
+            >
               <View
-                key={endpoint.id}
                 style={[
-                  styles.endpointWrap,
+                  styles.endpointIndicatorBadge,
+                  isStart ? styles.endpointStart : styles.endpointEnd,
+                ]}
+              >
+                <Text style={styles.endpointIndicatorText}>{isStart ? 'A' : 'B'}</Text>
+              </View>
+              <View
+                style={[
+                  styles.endpointIndicatorArrowWrap,
                   {
-                    left: endpointScreenX - endpointRadius,
-                    top: endpointScreenY - endpointRadius,
-                    width: endpointRadius * 2,
-                    height: endpointRadius * 2,
-                    opacity: drag ? 0.94 : 1,
-                    transform: [{ scale: drag ? 1.07 : 1 }],
+                    transform: [{ rotate: `${indicator.angle}rad` }],
                   },
                 ]}
               >
-                <View
-                  style={[
-                    styles.endpoint,
-                    {
-                      width: endpointRadius * 2,
-                      height: endpointRadius * 2,
-                      borderRadius: endpointRadius,
-                    },
-                    isStart ? styles.endpointStart : styles.endpointEnd,
-                  ]}
-                >
-                  <Text style={styles.endpointText}>{isStart ? 'A' : 'B'}</Text>
-                </View>
+                <Text style={styles.endpointIndicatorArrow}>{'>'}</Text>
               </View>
-            );
-          })}
-        </View>
+            </Pressable>
+          );
+        })}
 
         {blockedMessage ? (
-          <View pointerEvents="none" style={styles.blockedToast}>
-            <Text style={styles.blockedToastText}>{blockedMessage}</Text>
-          </View>
-        ) : null}
-
-        {draggingEndpoint ? (
-          <View
+          <Animated.View
             pointerEvents="none"
             style={[
-              styles.deleteZone,
-              { bottom: 12 + bottomInset },
-              draggingEndpoint.overDeleteZone ? styles.deleteZoneActive : null,
+              styles.blockedToast,
+              {
+                top: blockedToastTop,
+                transform: [{ translateX: shakeX }],
+              },
             ]}
           >
-            <Text style={styles.deleteZoneText}>DELETE</Text>
-          </View>
+            <Text style={styles.blockedToastText}>{blockedMessage}</Text>
+          </Animated.View>
         ) : null}
 
-        <View style={[styles.zoomControls, { bottom: 10 + bottomInset }]}>
-          {Platform.OS === 'web' ? (
-            <>
-              <Pressable style={styles.zoomButton} onPress={() => zoomByFactor(1.16)}>
-                <Text style={styles.zoomButtonText}>+</Text>
-              </Pressable>
-              <Pressable style={[styles.zoomButton, styles.zoomButtonSpacer]} onPress={() => zoomByFactor(0.86)}>
-                <Text style={styles.zoomButtonText}>-</Text>
-              </Pressable>
-            </>
-          ) : null}
+        {deletePrompt ? (
           <Pressable
-            style={[styles.zoomButton, Platform.OS === 'web' ? styles.zoomButtonSpacer : null]}
+            style={[
+              styles.deletePrompt,
+              {
+                left: deletePrompt.x,
+                top: deletePrompt.y,
+              },
+            ]}
+            onPress={() => deleteEndpointById(deletePrompt.endpointId)}
+          >
+            <Text style={styles.deletePromptText}>Delete</Text>
+          </Pressable>
+        ) : null}
+
+        <Pressable
+          hitSlop={12}
+          style={[styles.logoButton, { top: topControlsTop }]}
+          onPress={handleLogoPress}
+          onLongPress={showLogoHint}
+          accessibilityLabel="Tunnel Navigator"
+        >
+          <MaterialCommunityIcons name="compass-rose" size={28} color="#86cbff" />
+        </Pressable>
+
+        {logoHintVisible ? (
+          <Animated.View
+            style={[
+              styles.logoHintBubble,
+              {
+                top: 15 + topInset,
+                opacity: logoHintOpacity,
+                transform: [{ translateX: logoHintTranslateX }],
+              },
+            ]}
+          >
+            <Text style={styles.logoHintText}>Tunnel Navigator</Text>
+          </Animated.View>
+        ) : null}
+
+        <View style={[styles.topRightControls, { top: topControlsTop }]}>
+          <Pressable
+            hitSlop={10}
+            style={({ pressed }) => [styles.focusIconButton, pressed ? styles.dockButtonPressed : null]}
             onPress={() => {
+              triggerHaptic('light');
               centerOnSlot(defaultCenterSlotId, getPreferredFocusScale());
             }}
+            onLongPress={showFocusHint}
+            accessibilityLabel="Focus map"
           >
-            <Text style={styles.zoomButtonText}>C</Text>
+            <MaterialCommunityIcons name="crosshairs-gps" size={20} color="#dce8fa" />
+          </Pressable>
+          <Pressable
+            hitSlop={10}
+            style={({ pressed }) => [styles.routeInfoIconButton, pressed ? styles.dockButtonPressed : null]}
+            onPress={() => {
+              setFocusHintVisible(false);
+              focusHintAnim.setValue(0);
+              setRouteInfoOpen((previous) => {
+                if (previous) {
+                  return false;
+                }
+
+                setInfoTab('route');
+                return true;
+              });
+            }}
+            accessibilityLabel="Route info"
+          >
+            <MaterialCommunityIcons name="information-outline" size={21} color="#dce8fa" />
           </Pressable>
         </View>
 
-        {__DEV__ ? (
-          <View pointerEvents="none" style={styles.debugPill}>
+        {focusHintVisible ? (
+          <Animated.View
+            style={[
+              styles.focusHintBubble,
+              {
+                top: 56 + topInset,
+                opacity: focusHintOpacity,
+                transform: [{ translateX: focusHintTranslateX }],
+              },
+            ]}
+          >
+            <Text style={styles.focusHintText}>Center</Text>
+          </Animated.View>
+        ) : null}
+        {routeInfoOpen ? (
+          <View style={[styles.routeInfoPopover, { top: 58 + topInset }]}>
+            <View style={styles.infoTabsRow}>
+              <Pressable
+                style={[styles.infoTabButton, infoTab === 'route' ? styles.infoTabButtonActive : null]}
+                onPress={() => setInfoTab('route')}
+              >
+                <Text style={[styles.infoTabText, infoTab === 'route' ? styles.infoTabTextActive : null]}>Route</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.infoTabButton, infoTab === 'legend' ? styles.infoTabButtonActive : null]}
+                onPress={() => setInfoTab('legend')}
+              >
+                <Text style={[styles.infoTabText, infoTab === 'legend' ? styles.infoTabTextActive : null]}>Legend</Text>
+              </Pressable>
+            </View>
+
+            {infoTab === 'route' ? (
+              routes.length > 0 ? (
+                <View style={styles.routeStatsRow}>
+                  <View style={styles.routeStatCard}>
+                    <Text style={styles.routeStatLabel}>Distance</Text>
+                    <Text style={styles.routeStatValue}>{routes[0].distance}</Text>
+                  </View>
+                  <View style={styles.routeStatCard}>
+                    <Text style={styles.routeStatLabel}>Equal Paths</Text>
+                    <Text style={styles.routeStatValue}>{routes.length}</Text>
+                  </View>
+                </View>
+              ) : (
+                <Text style={styles.routeInfoPopoverText}>Select two slots to calculate route.</Text>
+              )
+            ) : (
+              <View style={styles.legendWrap}>
+                <Text style={styles.legendSectionTitle}>Slots</Text>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.building }]} />
+                  <Text style={styles.legendRowText}>Building</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.junction }]} />
+                  <Text style={styles.legendRowText}>Junction</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.intersection }]} />
+                  <Text style={styles.legendRowText}>Intersection</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.stairs }]} />
+                  <Text style={styles.legendRowText}>Stairs</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendSlotSwatch, { borderColor: '#ffbe70', borderStyle: 'dashed' }]} />
+                  <Text style={styles.legendRowText}>Exit-only slot</Text>
+                </View>
+
+                <Text style={[styles.legendSectionTitle, styles.legendSectionSpacing]}>Edges</Text>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendEdgeSwatch, { backgroundColor: EDGE_TYPE_COLORS.flat }]} />
+                  <Text style={styles.legendRowText}>Flat</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendEdgeSwatch, { backgroundColor: EDGE_TYPE_COLORS.ramp }]} />
+                  <Text style={styles.legendRowText}>Ramp</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendEdgeSwatch, { backgroundColor: EDGE_TYPE_COLORS.stairs }]} />
+                  <Text style={styles.legendRowText}>Stairs</Text>
+                </View>
+
+                <Text style={[styles.legendSectionTitle, styles.legendSectionSpacing]}>Routes</Text>
+                <View style={styles.legendRow}>
+                  <View style={styles.legendRouteSwatchRow}>
+                    <View style={[styles.legendEdgeSwatch, { backgroundColor: ROUTE_COLORS[0] }]} />
+                    <View style={[styles.legendEdgeSwatch, { backgroundColor: ROUTE_COLORS[1] }]} />
+                  </View>
+                  <Text style={styles.legendRowText}>Distinct shortest paths</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <View style={[styles.legendEdgeSwatch, { backgroundColor: SHARED_ROUTE_COLOR }]} />
+                  <Text style={styles.legendRowText}>Shared edge across paths</Text>
+                </View>
+              </View>
+            )}
+          </View>
+        ) : null}
+
+        {!draggingEndpoint ? (
+          <View style={[styles.toolsDock, { bottom: 10 + bottomInset }]}>
+            <Animated.View
+              pointerEvents={toolsDockOpen ? 'auto' : 'none'}
+              style={[
+                styles.toolsDockTray,
+                {
+                  opacity: toolsDockAnim,
+                  transform: [{ translateX: toolsDockTranslateX }],
+                },
+              ]}
+            >
+              <Pressable
+                hitSlop={10}
+                style={({ pressed }) => [
+                  styles.toolsDockButton,
+                  endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
+                  pressed ? styles.dockButtonPressed : null,
+                ]}
+                disabled={endpoints.length !== 2}
+                onPress={() => runToolAction(swapEndpoints)}
+              >
+                <Text style={styles.toolsDockButtonText}>Swap</Text>
+              </Pressable>
+              <Pressable
+                hitSlop={10}
+                style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                onPress={() => runToolAction(clearEndpoints)}
+              >
+                <Text style={styles.toolsDockButtonText}>Clear</Text>
+              </Pressable>
+              <Pressable
+                hitSlop={10}
+                style={({ pressed }) => [
+                  styles.toolsDockButton,
+                  toolsPinned ? styles.toolsDockButtonActive : null,
+                  pressed ? styles.dockButtonPressed : null,
+                ]}
+                onPress={() => {
+                  setToolsPinned((previous) => !previous);
+                  triggerHaptic('light');
+                }}
+                accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
+              >
+                <MaterialCommunityIcons
+                  name={toolsPinned ? 'pin' : 'pin-outline'}
+                  size={17}
+                  color={toolsPinned ? '#8ec5ff' : '#dce8fa'}
+                />
+              </Pressable>
+              {EDIT_LAYOUT_ENABLED ? (
+                <Pressable
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.toolsDockButton,
+                    editLayoutMode ? styles.toolsDockButtonActive : null,
+                    pressed ? styles.dockButtonPressed : null,
+                  ]}
+                  onPress={() => runToolAction(() => setEditLayoutMode((previous) => !previous))}
+                >
+                  <Text style={styles.toolsDockButtonText}>{editLayoutMode ? 'Done' : 'Edit'}</Text>
+                </Pressable>
+              ) : null}
+              {EDIT_LAYOUT_ENABLED && editLayoutMode ? (
+                <>
+                  <Pressable
+                    hitSlop={10}
+                    style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                    onPress={() => runToolAction(() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length))}
+                  >
+                    <Text style={styles.toolsDockButtonText}>Grid {gridSize}</Text>
+                  </Pressable>
+                  <Pressable
+                    hitSlop={10}
+                    style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                    onPress={() => runToolAction(() => setExportVisible(true))}
+                  >
+                    <Text style={styles.toolsDockButtonText}>Export</Text>
+                  </Pressable>
+                </>
+              ) : null}
+            </Animated.View>
+            <Pressable
+              hitSlop={12}
+              style={[styles.toolsMainButton, toolsDockOpen ? styles.toolsMainButtonActive : null]}
+              onPress={() => {
+                triggerHaptic('light');
+                setToolsDockOpen((previous) => {
+                  if (previous && toolsPinned) {
+                    setToolsPinned(false);
+                  }
+                  return !previous;
+                });
+              }}
+            >
+              <Text style={styles.toolsMainButtonText}>{toolsDockOpen ? 'Close' : 'Tools'}</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {DEBUG_UI_ENABLED && toolsDockOpen ? (
+          <View pointerEvents="none" style={[styles.debugPill, { bottom: 10 + bottomInset }]}>
             <Text style={styles.debugPillText}>
               {`slots:${slots.length} scale:${viewport.scale.toFixed(2)} tx:${Math.round(viewport.tx)} ty:${Math.round(viewport.ty)} view:${Math.round(viewportSize.width)}x${Math.round(viewportSize.height)}`}
             </Text>
           </View>
         ) : null}
       </View>
-
-      {routes.length > 0 ? (
-        <View style={[styles.routeInfoBar, { paddingBottom: 18 + bottomInset }]}>
-          <Text style={styles.routeInfoText}>
-            Distance: {routes[0].distance}  |  Equal shortest paths: {routes.length}
-          </Text>
-        </View>
-      ) : null}
 
       <Modal
         visible={selectedEdge !== null}
@@ -1551,59 +2678,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0d121a',
   },
-  header: {
-    paddingHorizontal: 14,
-    paddingTop: 14,
-    paddingBottom: 10,
-    backgroundColor: '#121a26',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1f2a3d',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  headerLeft: {
-    flex: 1,
-    paddingRight: 8,
-  },
-  title: {
-    color: '#e9eff8',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  subtitle: {
-    marginTop: 3,
-    color: '#9ba9bf',
-    fontSize: 12,
-    lineHeight: 16,
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerButtonSpacer: {
-    marginLeft: 8,
-  },
-  headerButton: {
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: '#1d2a3f',
-    borderWidth: 1,
-    borderColor: '#2e425f',
-  },
-  headerButtonActive: {
-    backgroundColor: '#2a7af5',
-    borderColor: '#4f95ff',
-  },
-  headerButtonText: {
-    color: '#d8e4f7',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  headerButtonTextActive: {
-    color: '#f3f8ff',
-  },
   canvas: {
     flex: 1,
     overflow: 'hidden',
@@ -1640,6 +2714,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: SLOT_RADIUS * 2,
     alignItems: 'center',
+    overflow: 'visible',
   },
   slot: {
     width: SLOT_RADIUS * 2,
@@ -1667,13 +2742,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#3c3416',
   },
   slotLabel: {
-    width: 132,
-    marginTop: 7,
-    marginLeft: -46,
+    position: 'absolute',
+    zIndex: 3,
+    paddingHorizontal: 4,
+    paddingVertical: LABEL_VERTICAL_PADDING,
+    borderRadius: 6,
+    backgroundColor: 'rgba(11, 20, 31, 0.56)',
     color: '#a3b8d8',
-    fontSize: 9.5,
+    fontSize: 8.8,
     textAlign: 'center',
-    lineHeight: 12.5,
+    lineHeight: LABEL_LINE_HEIGHT,
+    textShadowColor: 'rgba(3, 8, 14, 0.65)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 1,
   },
   endpointWrap: {
     position: 'absolute',
@@ -1719,64 +2800,337 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  deleteZone: {
+  tapPulse: {
     position: 'absolute',
-    right: DELETE_TARGET_MARGIN,
-    bottom: 12,
-    width: DELETE_TARGET_SIZE,
-    height: DELETE_TARGET_SIZE,
-    borderRadius: DELETE_TARGET_SIZE / 2,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     borderWidth: 2,
-    borderColor: '#8f4655',
-    backgroundColor: 'rgba(88, 30, 44, 0.62)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderColor: '#9fc7ff',
+    backgroundColor: 'rgba(128, 182, 255, 0.2)',
   },
-  deleteZoneActive: {
-    borderColor: '#ff8ea7',
-    backgroundColor: 'rgba(130, 30, 55, 0.94)',
-  },
-  deleteZoneText: {
-    color: '#ffd5de',
-    fontWeight: '800',
-    fontSize: 10,
-    letterSpacing: 0.9,
-  },
-  zoomControls: {
+  screenTapPulse: {
     position: 'absolute',
-    right: 10,
-    bottom: 10,
-  },
-  zoomButtonSpacer: {
-    marginTop: 8,
-  },
-  zoomButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 10,
-    backgroundColor: '#1d2a3f',
+    width: 60,
+    height: 60,
+    borderRadius: 30,
     borderWidth: 1,
-    borderColor: '#2d425e',
+    borderColor: 'rgba(176, 198, 228, 0.65)',
+    backgroundColor: 'rgba(134, 166, 212, 0.12)',
+  },
+  endpointIndicator: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  zoomButtonText: {
-    color: '#dce8fa',
-    fontSize: 20,
-    fontWeight: '700',
-    marginTop: -1,
+  endpointIndicatorBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  routeInfoBar: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#1f2a3d',
-    backgroundColor: '#101925',
-  },
-  routeInfoText: {
-    color: '#cfddf3',
+  endpointIndicatorText: {
+    color: '#f4f8ff',
+    fontWeight: '800',
     fontSize: 12,
-    textAlign: 'center',
+  },
+  endpointIndicatorArrowWrap: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  endpointIndicatorArrow: {
+    marginLeft: 25,
+    color: '#dce8fa',
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  deletePrompt: {
+    position: 'absolute',
+    width: DELETE_PROMPT_WIDTH,
+    height: DELETE_PROMPT_HEIGHT,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#9f5060',
+    backgroundColor: 'rgba(122, 40, 56, 0.94)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#2f0f18',
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 3 },
+    shadowRadius: 6,
+    elevation: 8,
+  },
+  deletePromptText: {
+    color: '#ffe1e8',
+    fontWeight: '800',
+    fontSize: 12,
+    letterSpacing: 0.2,
+  },
+  touchLayer: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  logoButton: {
+    position: 'absolute',
+    left: 12,
+    width: 50,
+    height: 50,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#2f5f8d',
+    backgroundColor: '#17324f',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#06101d',
+    shadowOpacity: 0.32,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  logoHintBubble: {
+    position: 'absolute',
+    left: 70,
+    borderTopRightRadius: 16,
+    borderBottomRightRadius: 16,
+    borderTopLeftRadius: 8,
+    borderBottomLeftRadius: 8,
+    backgroundColor: 'rgba(18, 47, 77, 0.97)',
+    borderWidth: 1,
+    borderColor: '#4c83b9',
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+    shadowColor: '#06101d',
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  logoHintText: {
+    color: '#e9f4ff',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  topRightControls: {
+    position: 'absolute',
+    right: 12,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  focusIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#162338',
+    borderWidth: 1,
+    borderColor: '#355176',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  focusHintBubble: {
+    position: 'absolute',
+    right: 96,
+    borderRadius: 10,
+    backgroundColor: 'rgba(15, 24, 36, 0.96)',
+    borderWidth: 1,
+    borderColor: '#314d72',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  focusHintText: {
+    color: '#dce8fa',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  dockButtonPressed: {
+    opacity: 0.75,
+    transform: [{ scale: 0.98 }],
+  },
+  routeInfoIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#162338',
+    borderWidth: 1,
+    borderColor: '#355176',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  routeInfoPopover: {
+    position: 'absolute',
+    right: 12,
+    minWidth: 220,
+    borderRadius: 14,
+    backgroundColor: '#111d2d',
+    borderWidth: 1,
+    borderColor: '#355176',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  routeInfoPopoverText: {
+    color: '#bfd1ec',
+    fontSize: 11.5,
+    lineHeight: 17,
+  },
+  routeStatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  routeStatCard: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#3a577d',
+    backgroundColor: '#14253a',
+    paddingHorizontal: 9,
+    paddingVertical: 8,
+  },
+  routeStatLabel: {
+    color: '#9db3d4',
+    fontSize: 10,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  routeStatValue: {
+    marginTop: 3,
+    color: '#e6f0ff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  infoTabsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 8,
+  },
+  infoTabButton: {
+    flex: 1,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  infoTabButtonActive: {
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
+  },
+  infoTabText: {
+    color: '#bcd0ee',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  infoTabTextActive: {
+    color: '#f3f8ff',
+  },
+  legendWrap: {
+    paddingTop: 2,
+  },
+  legendSectionTitle: {
+    color: '#a9bfe0',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  legendSectionSpacing: {
+    marginTop: 9,
+  },
+  legendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  legendSlotSwatch: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    backgroundColor: '#132033',
+  },
+  legendEdgeSwatch: {
+    width: 26,
+    height: 4,
+    borderRadius: 3,
+  },
+  legendRouteSwatchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  legendRowText: {
+    marginLeft: 8,
+    color: '#c7d8ef',
+    fontSize: 11,
+  },
+  toolsDock: {
+    position: 'absolute',
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  toolsDockTray: {
+    marginRight: 8,
+    maxWidth: '78%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    backgroundColor: 'rgba(16, 26, 38, 0.96)',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#355176',
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+  },
+  toolsDockButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: '#1d2c42',
+    borderWidth: 1,
+    borderColor: '#3b5a84',
+  },
+  toolsDockButtonActive: {
+    backgroundColor: '#2a7af5',
+    borderColor: '#5c99ff',
+  },
+  toolsDockButtonDisabled: {
+    opacity: 0.45,
+  },
+  toolsDockButtonText: {
+    color: '#dce8fa',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  toolsMainButton: {
+    minWidth: 82,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderTopLeftRadius: 16,
+    borderBottomLeftRadius: 16,
+    borderTopRightRadius: 18,
+    borderBottomRightRadius: 18,
+    backgroundColor: '#1a2537',
+    borderWidth: 1,
+    borderColor: '#324b6e',
+    alignItems: 'center',
+  },
+  toolsMainButtonActive: {
+    backgroundColor: '#244f8a',
+    borderColor: '#5a9dff',
+  },
+  toolsMainButtonText: {
+    color: '#dce8fa',
+    fontSize: 12,
+    fontWeight: '700',
   },
   debugPill: {
     position: 'absolute',
@@ -1945,3 +3299,4 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
 });
+
