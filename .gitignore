@@ -44,5 +44,4 @@ yarn-error.*
 .idea/
 
 # local workflow docs
-CONTRIBUTING.md
-PR_NOTES.md
+docs/local/
