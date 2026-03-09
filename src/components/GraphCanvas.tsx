@@ -542,7 +542,7 @@ function buildLabelPresentation(text: string, options: LabelBuildOptions): Label
   const maxInnerWidth = Math.max(24, options.maxWidth - LABEL_HORIZONTAL_PADDING);
   const lines = wrapTextToLines(text, maxInnerWidth, options.maxLines);
   const widestLine = lines.reduce((widest, line) => Math.max(widest, estimateTextWidth(line)), 0);
-  const widthBuffer = options.widthBuffer ?? 4;
+  const widthBuffer = options.widthBuffer ?? 6;
   const width = clamp(
     Math.ceil(widestLine + LABEL_HORIZONTAL_PADDING + widthBuffer),
     options.minWidth,
@@ -593,7 +593,7 @@ function getLabelPresentation(
         minWidth: Math.min(LABEL_MIN_WIDTH, LABEL_JUNCTION_COMPACT_WIDTH),
         maxWidth: LABEL_JUNCTION_COMPACT_WIDTH,
         maxLines: 1,
-        widthBuffer: 3,
+        widthBuffer: 4,
       });
     }
 
@@ -602,10 +602,10 @@ function getLabelPresentation(
       ? [...aliasLabels.slice(0, visibleAliasCount), `+${aliasLabels.length - visibleAliasCount} more`]
       : aliasLabels;
     return buildLabelPresentation(lines.join('\n'), {
-      minWidth: LABEL_JUNCTION_WIDTH,
+      minWidth: Math.max(72, LABEL_MIN_WIDTH),
       maxWidth: LABEL_JUNCTION_MAX_WIDTH,
-      maxLines: highZoomExpanded ? 10 : 6,
-      widthBuffer: 8,
+      maxLines: highZoomExpanded ? 10 : 7,
+      widthBuffer: 12,
     });
   }
 
@@ -619,15 +619,15 @@ function getLabelPresentation(
       minWidth: LABEL_MIN_WIDTH,
       maxWidth: LABEL_COMPACT_WIDTH,
       maxLines: 1,
-      widthBuffer: 3,
+      widthBuffer: 4,
     });
   }
 
   return buildLabelPresentation(trimmedLabel, {
-    minWidth: 74,
-    maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 60) : (LABEL_BASE_WIDTH + 26),
-    maxLines: highZoomExpanded ? 6 : 4,
-    widthBuffer: 9,
+    minWidth: 70,
+    maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 96) : (LABEL_BASE_WIDTH + 40),
+    maxLines: highZoomExpanded ? 7 : 5,
+    widthBuffer: highZoomExpanded ? 18 : 12,
   });
 }
 
@@ -862,18 +862,16 @@ export default function GraphCanvas() {
 
     const currentPresentation = labelPresentationById.get(slotId);
     const currentLayout = labelLayoutById.get(slotId);
-    const compactPresentation = slot
-      ? getLabelPresentation(slot, editLayoutMode, false, false)
+    const expandedPresentation = slot
+      ? getLabelPresentation(slot, editLayoutMode, true, true)
       : null;
     const currentlyExpandedAndVisible = Boolean(
       currentPresentation
       && currentLayout
-      && compactPresentation
-      && (
-        currentPresentation.lines > compactPresentation.lines
-        || currentPresentation.width > compactPresentation.width + 4
-        || currentPresentation.text !== compactPresentation.text
-      ),
+      && expandedPresentation
+      && currentPresentation.text === expandedPresentation.text
+      && currentPresentation.lines >= expandedPresentation.lines
+      && currentPresentation.width >= expandedPresentation.width - 1,
     );
     if (!editLayoutRef.current && currentlyExpandedAndVisible) {
       panLabelIntoView(slotId, `visible:${slotId}`);
