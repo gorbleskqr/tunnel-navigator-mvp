@@ -64,6 +64,7 @@ const WORLD_BOUNDS_PADDING = 180;
 const LABEL_LOW_ZOOM_PROGRESS_THRESHOLD = 0.24;
 const LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD = 0.5;
 const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.84;
+const LABEL_JUNCTION_CLUSTER_FULL_TEXT_PROGRESS_THRESHOLD = 0.74;
 const HOLD_TO_DELETE_MS = 320;
 const ENDPOINT_INDICATOR_MARGIN = 26;
 const ENDPOINT_INDICATOR_CLEARANCE = 54;
@@ -1348,6 +1349,14 @@ export default function GraphCanvas() {
       const isInteractionTarget = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
         || expandedLabelSlotId === slot.id;
+      const visibleAliasCount = slot.node.aliases.reduce((count, alias) => {
+        return alias.label.trim().length > 0 ? (count + 1) : count;
+      }, 0);
+      const junctionClusterFullTextByZoom = (
+        slot.node.type === 'junction'
+        && visibleAliasCount >= 3
+        && zoomProgress >= LABEL_JUNCTION_CLUSTER_FULL_TEXT_PROGRESS_THRESHOLD
+      );
       const fullTextByZoom = fullTextZoom && slot.node.type !== 'junction';
       const canPromoteByMedium = (
         mediumZoom
@@ -1358,6 +1367,7 @@ export default function GraphCanvas() {
         isInteractionTarget
         || nearMaxZoom
         || fullTextByZoom
+        || junctionClusterFullTextByZoom
         || canPromoteByMedium
       );
 
