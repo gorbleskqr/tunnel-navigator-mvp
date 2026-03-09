@@ -65,7 +65,7 @@ const LABEL_AUTO_PAN_MAX_SHIFT = 140;
 const WORLD_BOUNDS_PADDING = 180;
 const LABEL_LOW_ZOOM_PROGRESS_THRESHOLD = 0.24;
 const LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD = 0.5;
-const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.78;
+const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.84;
 const HOLD_TO_DELETE_MS = 320;
 const ENDPOINT_INDICATOR_MARGIN = 26;
 const ENDPOINT_INDICATOR_CLEARANCE = 54;
@@ -413,6 +413,22 @@ function segmentIntersectsRect(
     || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, right, bottom, left, bottom)
     || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, left, bottom, left, top)
   );
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.trim().replace('#', '');
+  const safe = normalized.length === 3
+    ? normalized.split('').map((c) => `${c}${c}`).join('')
+    : normalized;
+  const parsed = Number.parseInt(safe, 16);
+  if (!Number.isFinite(parsed) || safe.length !== 6) {
+    return `rgba(220, 234, 255, ${alpha})`;
+  }
+
+  const r = (parsed >> 16) & 255;
+  const g = (parsed >> 8) & 255;
+  const b = parsed & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
@@ -1230,7 +1246,7 @@ export default function GraphCanvas() {
       toValue: primaryCount,
       duration: Math.max(520, primaryCount * 180),
       easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
   }, [primaryRouteEdgeIndex, routeReveal, routeSignature]);
 
@@ -1326,11 +1342,10 @@ export default function GraphCanvas() {
     }
 
     for (const slot of slots) {
-      const isExpanded = expandedLabelSlotId === slot.id;
       const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
       const isInteractionTarget = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
-        || isExpanded;
+        || expandedLabelSlotId === slot.id;
       const canPromoteByMedium = (
         mediumZoom
         && isImportantLowZoom
@@ -1396,7 +1411,7 @@ export default function GraphCanvas() {
         }
       }
 
-      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || isExpanded);
+      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || fullTextZoom);
       if (label) {
         presentation.set(slot.id, label);
       }
@@ -1467,7 +1482,7 @@ export default function GraphCanvas() {
 
       const isEndpoint = endpointSlotIds.has(slot.id);
       const isHighlighted = highlightedSlotIds.has(slot.id);
-      const isExpanded = expandedLabelSlotId === slot.id;
+      const isExpanded = false;
       const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
       if (!editLayoutMode && lowZoom && !isImportantLowZoom) {
         continue;
@@ -1488,7 +1503,7 @@ export default function GraphCanvas() {
         continue;
       }
 
-      const isPinnedExpanded = isExpanded && !editLayoutMode;
+      const isPinnedExpanded = false;
       const minLabelLeft = isPinnedExpanded
         ? -presentation.width + LABEL_VIEWPORT_MARGIN
         : LABEL_VIEWPORT_MARGIN;
@@ -1552,7 +1567,10 @@ export default function GraphCanvas() {
       if (slot.node.type === 'building') {
         priority += 20;
       } else if (slot.node.type === 'junction') {
-        priority += 10;
+        priority += 22;
+        if (!fullTextZoom) {
+          priority += 18;
+        }
         if (isImportantLowZoom && !isExpanded && !fullTextZoom) {
           priority += 24;
         }
@@ -1772,8 +1790,46 @@ export default function GraphCanvas() {
       return;
     }
 
-    const layout = labelLayoutById.get(slotId);
-    const presentation = labelPresentationById.get(slotId);
+    const slot = slotById.get(slotId);
+    const isExpandedTarget = expandedLabelSlotId === slotId;
+    const baseLayout = labelLayoutById.get(slotId);
+    const basePresentation = labelPresentationById.get(slotId);
+    const expandedPresentation = (isExpandedTarget && slot)
+      ? getLabelPresentation(slot, editLayoutMode, true, true)
+      : null;
+    const presentation = expandedPresentation ?? basePresentation;
+    let layout = baseLayout;
+    if (expandedPresentation && slot) {
+      if (expandedLabelAnchor && expandedLabelAnchor.slotId === slotId) {
+        layout = {
+          left: expandedLabelAnchor.left,
+          top: expandedLabelAnchor.top,
+          occludesHighlightedRoute: false,
+        };
+      } else {
+        const maxLeft = Math.max(
+          LABEL_VIEWPORT_MARGIN,
+          viewportSize.width - expandedPresentation.width - LABEL_VIEWPORT_MARGIN,
+        );
+        const maxTop = Math.max(
+          LABEL_VIEWPORT_MARGIN,
+          viewportSize.height - expandedPresentation.height - LABEL_VIEWPORT_MARGIN,
+        );
+        const slotScreenX = worldToScreenX(slot.x, viewportRef.current);
+        const slotScreenY = worldToScreenY(slot.y, viewportRef.current);
+        const slotRadius = clamp(SLOT_RADIUS * viewportRef.current.scale, 8, 30);
+        const preferredTopBelow = slotScreenY + slotRadius + 7;
+        const preferredTopAbove = slotScreenY - slotRadius - expandedPresentation.height - 5;
+        const belowTop = clamp(preferredTopBelow, LABEL_VIEWPORT_MARGIN, maxTop);
+        const aboveTop = clamp(preferredTopAbove, LABEL_VIEWPORT_MARGIN, maxTop);
+        const useAboveFirst = preferredTopBelow + expandedPresentation.height > maxTop;
+        layout = {
+          left: clamp(slotScreenX - expandedPresentation.width / 2, LABEL_VIEWPORT_MARGIN, maxLeft),
+          top: useAboveFirst ? aboveTop : belowTop,
+          occludesHighlightedRoute: false,
+        };
+      }
+    }
     if (!layout || !presentation || viewportSize.width <= 0 || viewportSize.height <= 0) {
       return;
     }
@@ -1817,7 +1873,15 @@ export default function GraphCanvas() {
     }
 
     panLabelIntoView(expandedLabelSlotId, `expanded:${expandedLabelSlotId}`);
-  }, [expandedLabelSlotId, labelLayoutById, labelPresentationById, viewportSize.height, viewportSize.width]);
+  }, [
+    editLayoutMode,
+    expandedLabelAnchor,
+    expandedLabelSlotId,
+    labelLayoutById,
+    labelPresentationById,
+    viewportSize.height,
+    viewportSize.width,
+  ]);
 
   const centerOnSlot = (slotId: string, scale?: number): void => {
     const targetSlot = slotById.get(slotId);
@@ -3107,23 +3171,68 @@ export default function GraphCanvas() {
             const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
             const labelLayout = labelLayoutById.get(slot.id);
             const labelPresentation = labelPresentationById.get(slot.id);
+            const expandedLabelPresentation = isExpandedLabel
+              ? getLabelPresentation(slot, editLayoutMode, true, true)
+              : null;
             const labelLeftLocal = labelLayout ? labelLayout.left - (slotScreenX - slotRadius) : 0;
             const labelTopLocal = labelLayout ? labelLayout.top - (slotScreenY - slotRadius) : 0;
             const labelRightLocal = labelLeftLocal + (labelPresentation?.width ?? 0);
             const labelBottomLocal = labelTopLocal + (labelPresentation?.height ?? 0);
+            let expandedLabelLeftLocal = 0;
+            let expandedLabelTopLocal = 0;
+            let expandedLabelRightLocal = 0;
+            let expandedLabelBottomLocal = 0;
+            if (expandedLabelPresentation) {
+              const maxExpandedLeft = Math.max(
+                LABEL_VIEWPORT_MARGIN,
+                viewportSize.width - expandedLabelPresentation.width - LABEL_VIEWPORT_MARGIN,
+              );
+              const maxExpandedTop = Math.max(
+                LABEL_VIEWPORT_MARGIN,
+                viewportSize.height - expandedLabelPresentation.height - LABEL_VIEWPORT_MARGIN,
+              );
+              const preferredTopBelow = slotScreenY + slotRadius + 7;
+              const preferredTopAbove = slotScreenY - slotRadius - expandedLabelPresentation.height - 5;
+              const belowTop = clamp(preferredTopBelow, LABEL_VIEWPORT_MARGIN, maxExpandedTop);
+              const aboveTop = clamp(preferredTopAbove, LABEL_VIEWPORT_MARGIN, maxExpandedTop);
+              const useAboveFirst = preferredTopBelow + expandedLabelPresentation.height > maxExpandedTop;
+              const defaultExpandedTop = useAboveFirst ? aboveTop : belowTop;
+              const defaultExpandedLeft = clamp(
+                slotScreenX - expandedLabelPresentation.width / 2,
+                LABEL_VIEWPORT_MARGIN,
+                maxExpandedLeft,
+              );
+
+              const expandedTop = (expandedLabelAnchor && expandedLabelAnchor.slotId === slot.id)
+                ? expandedLabelAnchor.top
+                : defaultExpandedTop;
+              const expandedLeft = (expandedLabelAnchor && expandedLabelAnchor.slotId === slot.id)
+                ? expandedLabelAnchor.left
+                : defaultExpandedLeft;
+
+              expandedLabelLeftLocal = expandedLeft - (slotScreenX - slotRadius);
+              expandedLabelTopLocal = expandedTop - (slotScreenY - slotRadius);
+              expandedLabelRightLocal = expandedLabelLeftLocal + expandedLabelPresentation.width;
+              expandedLabelBottomLocal = expandedLabelTopLocal + expandedLabelPresentation.height;
+            }
             const slotCenterX = slotRadius;
             const slotCenterY = slotRadius;
             let connectorLength = 0;
             let connectorLeft = 0;
             let connectorTop = 0;
             let connectorAngle = 0;
-            if (isHoldFocused && labelLayout && labelPresentation) {
-              const targetX = clamp(slotCenterX, labelLeftLocal, labelRightLocal);
-              const targetY = slotCenterY < labelTopLocal
-                ? labelTopLocal
-                : slotCenterY > labelBottomLocal
-                  ? labelBottomLocal
-                  : clamp(slotCenterY, labelTopLocal, labelBottomLocal);
+            const activeLabelLeft = expandedLabelPresentation ? expandedLabelLeftLocal : labelLeftLocal;
+            const activeLabelTop = expandedLabelPresentation ? expandedLabelTopLocal : labelTopLocal;
+            const activeLabelRight = expandedLabelPresentation ? expandedLabelRightLocal : labelRightLocal;
+            const activeLabelBottom = expandedLabelPresentation ? expandedLabelBottomLocal : labelBottomLocal;
+            const hasActiveLabel = expandedLabelPresentation || (labelLayout && labelPresentation);
+            if (isHoldFocused && hasActiveLabel) {
+              const targetX = clamp(slotCenterX, activeLabelLeft, activeLabelRight);
+              const targetY = slotCenterY < activeLabelTop
+                ? activeLabelTop
+                : slotCenterY > activeLabelBottom
+                  ? activeLabelBottom
+                  : clamp(slotCenterY, activeLabelTop, activeLabelBottom);
               const vx = targetX - slotCenterX;
               const vy = targetY - slotCenterY;
               const rawLength = Math.sqrt(vx * vx + vy * vy);
@@ -3164,6 +3273,15 @@ export default function GraphCanvas() {
                         ? [
                           styles.slotHighlighted,
                           {
+                            borderColor: isExitOnly
+                              ? '#ffbe70'
+                              : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                            backgroundColor: hexToRgba(
+                              isExitOnly
+                                ? '#ffbe70'
+                                : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                              isExitOnly ? 0.26 : 0.22,
+                            ),
                             shadowColor: isExitOnly
                               ? '#ffbe70'
                               : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
@@ -3187,10 +3305,10 @@ export default function GraphCanvas() {
                     ]}
                   />
                 ) : null}
-                {labelLayout && labelPresentation ? (
+                {labelLayout && labelPresentation && !isExpandedLabel ? (
                   <Text
-                    numberOfLines={isExpandedLabel ? undefined : labelPresentation.lines}
-                    ellipsizeMode={isExpandedLabel ? 'clip' : 'tail'}
+                    numberOfLines={labelPresentation.lines}
+                    ellipsizeMode="tail"
                     style={[
                       styles.slotLabel,
                       highlighted ? styles.slotLabelOnHighlightedRoute : null,
@@ -3205,6 +3323,25 @@ export default function GraphCanvas() {
                     ]}
                   >
                     {labelPresentation.text}
+                  </Text>
+                ) : null}
+                {isExpandedLabel && expandedLabelPresentation ? (
+                  <Text
+                    ellipsizeMode="clip"
+                    style={[
+                      styles.slotLabel,
+                      highlighted ? styles.slotLabelOnHighlightedRoute : null,
+                      isHoldFocused ? styles.slotLabelFocused : null,
+                      styles.slotLabelExpandedOverlay,
+                      {
+                        width: expandedLabelPresentation.width,
+                        minHeight: expandedLabelPresentation.height,
+                        left: expandedLabelLeftLocal,
+                        top: expandedLabelTopLocal,
+                      },
+                    ]}
+                  >
+                    {expandedLabelPresentation.text}
                   </Text>
                 ) : null}
               </View>
@@ -3828,11 +3965,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#2f2415',
   },
   slotHighlighted: {
-    backgroundColor: '#2a4f7c',
     borderWidth: 2.8,
-    shadowOpacity: 0.6,
+    shadowOpacity: 0.78,
     shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 11,
+    shadowRadius: 14,
     elevation: 7,
   },
   slotDropPreview: {
@@ -3880,6 +4016,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowOffset: { width: 0, height: 1 },
     shadowRadius: 4,
+  },
+  slotLabelExpandedOverlay: {
+    zIndex: 4,
   },
   endpointWrap: {
     position: 'absolute',
