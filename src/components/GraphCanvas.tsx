@@ -3671,7 +3671,7 @@ export default function GraphCanvas() {
             style={[
               styles.focusHintBubble,
               {
-                top: topControlsTop,
+                top: topControlsTop + 3,
                 opacity: focusHintOpacity,
                 transform: [{ translateX: focusHintTranslateX }],
               },
@@ -4377,13 +4377,14 @@ const styles = StyleSheet.create({
   },
   focusHintBubble: {
     position: 'absolute',
-    right: 96,
+    right: 102,
     borderRadius: 10,
     backgroundColor: 'rgba(15, 24, 36, 0.96)',
     borderWidth: 1,
     borderColor: '#314d72',
     paddingHorizontal: 9,
-    minHeight: 38,
+    paddingVertical: 4,
+    minHeight: 32,
     justifyContent: 'center',
   },
   focusHintText: {
