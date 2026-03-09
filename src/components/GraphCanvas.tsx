@@ -1348,6 +1348,7 @@ export default function GraphCanvas() {
       const isInteractionTarget = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
         || expandedLabelSlotId === slot.id;
+      const fullTextByZoom = fullTextZoom && slot.node.type !== 'junction';
       const canPromoteByMedium = (
         mediumZoom
         && isImportantLowZoom
@@ -1356,7 +1357,7 @@ export default function GraphCanvas() {
       let emphasized = (
         isInteractionTarget
         || nearMaxZoom
-        || fullTextZoom
+        || fullTextByZoom
         || canPromoteByMedium
       );
 
@@ -1413,7 +1414,7 @@ export default function GraphCanvas() {
         }
       }
 
-      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || fullTextZoom);
+      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || fullTextByZoom);
       if (label) {
         presentation.set(slot.id, label);
       }
@@ -1533,7 +1534,7 @@ export default function GraphCanvas() {
       const preferredTop = useAboveFirst ? preferredTopAbove : preferredTopBelow;
       const topDrift = Math.abs(top - preferredTop);
       const maxCenterDriftX = Math.max(24, slotRadius + 20);
-      const maxTopDrift = presentation.height + slotRadius + 10;
+      const maxTopDrift = presentation.height + slotRadius + (slot.node.type === 'junction' ? 28 : 10);
       if (centerDriftX > maxCenterDriftX || topDrift > maxTopDrift) {
         continue;
       }
