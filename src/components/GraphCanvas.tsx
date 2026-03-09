@@ -1592,6 +1592,19 @@ export default function GraphCanvas() {
     });
 
     const accepted: LabelCandidate[] = [];
+    const hasPinnedExpanded = candidates.some((candidate) => candidate.pinned);
+    const collidesWithAccepted = (
+      candidate: LabelCandidate,
+      ignorePinnedExpanded: boolean,
+    ): boolean => {
+      return accepted.some((existing) => {
+        if (ignorePinnedExpanded && hasPinnedExpanded && existing.pinned) {
+          return false;
+        }
+        return labelsOverlap(candidate, existing);
+      });
+    };
+
     for (const candidate of candidates) {
       if (candidate.pinned) {
         accepted.push(candidate);
@@ -1604,7 +1617,7 @@ export default function GraphCanvas() {
       }
 
       let placed: LabelCandidate | null = candidate;
-      const collidesPrimary = accepted.some((existing) => labelsOverlap(candidate, existing));
+      const collidesPrimary = collidesWithAccepted(candidate, true);
       const primaryOccludesHighlightedRoute = candidate.occludesHighlightedRoute && !candidate.routeAnchored;
 
       if (collidesPrimary || primaryOccludesHighlightedRoute) {
@@ -1625,7 +1638,7 @@ export default function GraphCanvas() {
               candidate.routeAnchored,
             ),
           };
-          const collidesAlternate = accepted.some((existing) => labelsOverlap(alternateCandidate, existing));
+          const collidesAlternate = collidesWithAccepted(alternateCandidate, true);
           const alternateOccludesHighlightedRoute = (
             alternateCandidate.occludesHighlightedRoute
             && !alternateCandidate.routeAnchored
