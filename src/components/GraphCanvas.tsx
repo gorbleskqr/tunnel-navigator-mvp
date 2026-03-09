@@ -79,6 +79,9 @@ const ROUTE_DIRECTION_MARKER_MIN_LENGTH = 44;
 const LEVEL_CHANGE_ICON_MIN_LENGTH = 52;
 const LABEL_ROUTE_OCCLUSION_BUFFER = 8;
 const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
+const TOOLS_DOCK_ICON_SIZE = 22;
+const TOOLS_DOCK_ICON_WRAP_SIZE = 24;
+const TOOLS_DOCK_ICON_HALF_WRAP = TOOLS_DOCK_ICON_WRAP_SIZE / 2;
 const TOOL_ACTION_HOLD_MS = 420;
 const TOOLS_HINT_AUTO_HIDE_MS = 2200;
 // Keep layout editing local via .env.local so production builds stay read-only.
@@ -2904,11 +2907,11 @@ export default function GraphCanvas() {
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
   const swapHoldInset = swapHoldAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [10, 0],
+    outputRange: [TOOLS_DOCK_ICON_HALF_WRAP, 0],
   });
   const clearHoldFillWidth = clearHoldAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, 20],
+    outputRange: [0, TOOLS_DOCK_ICON_WRAP_SIZE],
   });
   const toolsDockTranslateX = toolsDockAnim.interpolate({
     inputRange: [0, 1],
@@ -3797,7 +3800,7 @@ export default function GraphCanvas() {
                 <View style={styles.toolsDockIconWrap}>
                   <MaterialCommunityIcons
                     name="swap-horizontal"
-                    size={18}
+                    size={TOOLS_DOCK_ICON_SIZE}
                     color={endpoints.length !== 2 ? '#7489a8' : (activeToolHoldAction === 'swap' ? '#8ec5ff' : '#dce8fa')}
                   />
                   <Animated.View
@@ -3810,7 +3813,7 @@ export default function GraphCanvas() {
                       },
                     ]}
                   >
-                    <MaterialCommunityIcons name="swap-horizontal" size={18} color="#8ec5ff" />
+                    <MaterialCommunityIcons name="swap-horizontal" size={TOOLS_DOCK_ICON_SIZE} color="#8ec5ff" />
                   </Animated.View>
                 </View>
                 {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Swap</Text> : null}
@@ -3828,7 +3831,7 @@ export default function GraphCanvas() {
                 <View style={styles.toolsDockIconWrap}>
                   <MaterialCommunityIcons
                     name="restart"
-                    size={18}
+                    size={TOOLS_DOCK_ICON_SIZE}
                     color={activeToolHoldAction === 'clear' ? '#8ec5ff' : '#dce8fa'}
                   />
                   <Animated.View
@@ -3838,7 +3841,7 @@ export default function GraphCanvas() {
                       { width: clearHoldFillWidth },
                     ]}
                   >
-                    <MaterialCommunityIcons name="restart" size={18} color="#8ec5ff" />
+                    <MaterialCommunityIcons name="restart" size={TOOLS_DOCK_ICON_SIZE} color="#8ec5ff" />
                   </Animated.View>
                 </View>
                 {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Clear</Text> : null}
@@ -3854,7 +3857,7 @@ export default function GraphCanvas() {
               >
                 <MaterialCommunityIcons
                   name={toolsHintPinned ? 'tooltip-text' : 'tooltip-text-outline'}
-                  size={17}
+                  size={TOOLS_DOCK_ICON_SIZE}
                   color={toolsHintPinned ? '#8ec5ff' : '#dce8fa'}
                 />
                 {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Hints</Text> : null}
@@ -3873,7 +3876,7 @@ export default function GraphCanvas() {
               >
                 <MaterialCommunityIcons
                   name={toolsPinned ? 'pin' : 'pin-outline'}
-                  size={17}
+                  size={TOOLS_DOCK_ICON_SIZE}
                   color={toolsPinned ? '#8ec5ff' : '#dce8fa'}
                 />
                 {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Pin</Text> : null}
@@ -4554,8 +4557,8 @@ const styles = StyleSheet.create({
     overflow: 'visible',
   },
   toolsDockIconWrap: {
-    width: 20,
-    height: 20,
+    width: TOOLS_DOCK_ICON_WRAP_SIZE,
+    height: TOOLS_DOCK_ICON_WRAP_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
   },
