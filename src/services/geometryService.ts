@@ -7,27 +7,28 @@ export function clampViewport(viewport: Viewport, bounds: WorldBounds, size: Siz
 
   const scaledWidth = bounds.width * viewport.scale;
   const scaledHeight = bounds.height * viewport.scale;
-  // Allow a small amount of edge whitespace so panning feels less rigid.
-  const edgeSlack = Math.max(14, Math.min(32, Math.min(size.width, size.height) * 0.045));
+  // Allow edge whitespace so panning feels less rigid, with extra vertical headroom on mobile.
+  const edgeSlackX = Math.max(14, Math.min(32, Math.min(size.width, size.height) * 0.045));
+  const edgeSlackY = Math.max(edgeSlackX + 14, Math.min(58, size.height * 0.1));
 
   let tx: number;
   let ty: number;
 
   if (scaledWidth <= size.width) {
     const centeredTx = size.width / 2 - ((bounds.minX + bounds.maxX) / 2) * viewport.scale;
-    tx = clamp(viewport.tx, centeredTx - edgeSlack, centeredTx + edgeSlack);
+    tx = clamp(viewport.tx, centeredTx - edgeSlackX, centeredTx + edgeSlackX);
   } else {
-    const minTx = size.width - bounds.maxX * viewport.scale - edgeSlack;
-    const maxTx = -bounds.minX * viewport.scale + edgeSlack;
+    const minTx = size.width - bounds.maxX * viewport.scale - edgeSlackX;
+    const maxTx = -bounds.minX * viewport.scale + edgeSlackX;
     tx = clamp(viewport.tx, minTx, maxTx);
   }
 
   if (scaledHeight <= size.height) {
     const centeredTy = size.height / 2 - ((bounds.minY + bounds.maxY) / 2) * viewport.scale;
-    ty = clamp(viewport.ty, centeredTy - edgeSlack, centeredTy + edgeSlack);
+    ty = clamp(viewport.ty, centeredTy - edgeSlackY, centeredTy + edgeSlackY);
   } else {
-    const minTy = size.height - bounds.maxY * viewport.scale - edgeSlack;
-    const maxTy = -bounds.minY * viewport.scale + edgeSlack;
+    const minTy = size.height - bounds.maxY * viewport.scale - edgeSlackY;
+    const maxTy = -bounds.minY * viewport.scale + edgeSlackY;
     ty = clamp(viewport.ty, minTy, maxTy);
   }
 

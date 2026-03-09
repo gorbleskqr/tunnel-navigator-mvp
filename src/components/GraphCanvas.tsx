@@ -57,6 +57,9 @@ const LABEL_VIEWPORT_MARGIN = 20;
 const LABEL_LONG_PRESS_MS = 380;
 const LABEL_EXPAND_DURATION_MS = 1500;
 const HOLD_TO_DELETE_MS = 320;
+const ENDPOINT_INDICATOR_MARGIN = 26;
+const ENDPOINT_INDICATOR_CLEARANCE = 54;
+const ENDPOINT_INDICATOR_STEP = 26;
 const DELETE_PROMPT_HIDE_MS = 2200;
 const DELETE_PROMPT_WIDTH = 74;
 const DELETE_PROMPT_HEIGHT = 32;
@@ -423,6 +426,7 @@ export default function GraphCanvas() {
   const logoHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandedLabelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const labelHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -581,6 +585,13 @@ export default function GraphCanvas() {
     if (endpointHoldTimerRef.current) {
       clearTimeout(endpointHoldTimerRef.current);
       endpointHoldTimerRef.current = null;
+    }
+  };
+
+  const clearLabelHoldTimer = (): void => {
+    if (labelHoldTimerRef.current) {
+      clearTimeout(labelHoldTimerRef.current);
+      labelHoldTimerRef.current = null;
     }
   };
 
@@ -1274,6 +1285,9 @@ export default function GraphCanvas() {
       if (expandedLabelTimerRef.current) {
         clearTimeout(expandedLabelTimerRef.current);
       }
+      if (labelHoldTimerRef.current) {
+        clearTimeout(labelHoldTimerRef.current);
+      }
       if (endpointHoldTimerRef.current) {
         clearTimeout(endpointHoldTimerRef.current);
       }
@@ -1522,6 +1536,7 @@ export default function GraphCanvas() {
   const onResponderGrant = (event: GestureResponderEvent): void => {
     const touches = getInteractionPoints(event);
     clearExpandedLabel();
+    clearLabelHoldTimer();
     clearEndpointHoldTimer();
     hideDeletePrompt();
 
@@ -1557,6 +1572,7 @@ export default function GraphCanvas() {
             && !currentInteraction.moved
             && !draggingEndpointRef.current
           ) {
+            triggerHaptic('warning');
             showDeletePromptForEndpoint(endpoint.id);
           }
           endpointHoldTimerRef.current = null;
@@ -1591,6 +1607,23 @@ export default function GraphCanvas() {
       slotTapCandidateId: tapHit?.slot.id ?? null,
       edgeTapCandidateIndex: edgeHitIndex,
     };
+
+    if (!editLayoutRef.current && tapHit?.slot.id) {
+      const slotId = tapHit.slot.id;
+      labelHoldTimerRef.current = setTimeout(() => {
+        const currentInteraction = interactionRef.current;
+        if (
+          currentInteraction.kind === 'pan'
+          && !currentInteraction.moved
+          && currentInteraction.slotTapCandidateId === slotId
+          && !editLayoutRef.current
+        ) {
+          showExpandedLabel(slotId);
+          interactionRef.current = { kind: 'idle' };
+        }
+        labelHoldTimerRef.current = null;
+      }, LABEL_LONG_PRESS_MS);
+    }
   };
 
   const onResponderMove = (event: GestureResponderEvent): void => {
@@ -1598,6 +1631,7 @@ export default function GraphCanvas() {
     const currentInteraction = interactionRef.current;
 
     if (touches.length >= 2) {
+      clearLabelHoldTimer();
       if (currentInteraction.kind !== 'pinch') {
         startPinch(touches[0], touches[1]);
       }
@@ -1658,6 +1692,7 @@ export default function GraphCanvas() {
           };
           setDraggingEndpoint(initialDrag);
           draggingEndpointRef.current = initialDrag;
+          triggerHaptic('light');
         }
       }
 
@@ -1699,6 +1734,10 @@ export default function GraphCanvas() {
       const dy = touch.y - currentInteraction.startY;
       const moved = currentInteraction.moved || Math.abs(dx) > TAP_MOVE_THRESHOLD || Math.abs(dy) > TAP_MOVE_THRESHOLD;
 
+      if (moved && !currentInteraction.moved) {
+        clearLabelHoldTimer();
+      }
+
       interactionRef.current = {
         ...currentInteraction,
         moved,
@@ -1730,6 +1769,7 @@ export default function GraphCanvas() {
 
   const onResponderRelease = (): void => {
     const currentInteraction = interactionRef.current;
+    clearLabelHoldTimer();
 
     if (currentInteraction.kind === 'endpoint-drag') {
       clearEndpointHoldTimer();
@@ -1758,6 +1798,7 @@ export default function GraphCanvas() {
   };
 
   const onResponderTerminate = (): void => {
+    clearLabelHoldTimer();
     clearEndpointHoldTimer();
     if (interactionRef.current.kind === 'endpoint-drag') {
       setDraggingEndpoint(null);
@@ -1881,9 +1922,25 @@ export default function GraphCanvas() {
       return [];
     }
 
-    const margin = 26;
+    const margin = ENDPOINT_INDICATOR_MARGIN;
     const indicators: EndpointIndicator[] = [];
     const ordered = endpointOrder(endpoints);
+    const visibleEndpointAnchors: Array<{ x: number; y: number }> = [];
+
+    for (const endpoint of ordered) {
+      const slot = slotById.get(endpoint.slotId);
+      if (!slot) {
+        continue;
+      }
+
+      const sx = worldToScreenX(slot.x, viewport);
+      const sy = worldToScreenY(slot.y, viewport);
+      const offscreen = sx < margin || sx > viewportSize.width - margin || sy < margin || sy > viewportSize.height - margin;
+
+      if (!offscreen) {
+        visibleEndpointAnchors.push({ x: sx, y: sy });
+      }
+    }
 
     for (const endpoint of ordered) {
       const slot = slotById.get(endpoint.slotId);
@@ -1901,13 +1958,63 @@ export default function GraphCanvas() {
 
       const x = clamp(sx, margin, viewportSize.width - margin);
       const y = clamp(sy, margin, viewportSize.height - margin);
-      const angle = Math.atan2(sy - y, sx - x);
+      const edgeClampedX = x <= margin + 0.5 || x >= viewportSize.width - margin - 0.5;
+      const edgeClampedY = y <= margin + 0.5 || y >= viewportSize.height - margin - 0.5;
+      const adjustAlongY = edgeClampedX || (!edgeClampedX && edgeClampedY);
+
+      const collides = (candidateX: number, candidateY: number): boolean => {
+        const overlapsVisibleEndpoint = visibleEndpointAnchors.some((anchor) => {
+          return distance(candidateX, candidateY, anchor.x, anchor.y) < ENDPOINT_INDICATOR_CLEARANCE;
+        });
+        if (overlapsVisibleEndpoint) {
+          return true;
+        }
+
+        return indicators.some((existing) => {
+          return distance(candidateX, candidateY, existing.x, existing.y) < ENDPOINT_INDICATOR_CLEARANCE;
+        });
+      };
+
+      let resolvedX = x;
+      let resolvedY = y;
+      if (collides(resolvedX, resolvedY)) {
+        const span = adjustAlongY
+          ? Math.max(0, viewportSize.height - margin * 2)
+          : Math.max(0, viewportSize.width - margin * 2);
+        const maxSteps = Math.max(1, Math.ceil(span / ENDPOINT_INDICATOR_STEP));
+        let found = false;
+
+        for (let stepIndex = 1; stepIndex <= maxSteps && !found; stepIndex += 1) {
+          for (const direction of [-1, 1]) {
+            const offset = ENDPOINT_INDICATOR_STEP * stepIndex * direction;
+            const candidateX = adjustAlongY
+              ? x
+              : clamp(x + offset, margin, viewportSize.width - margin);
+            const candidateY = adjustAlongY
+              ? clamp(y + offset, margin, viewportSize.height - margin)
+              : y;
+
+            if (!collides(candidateX, candidateY)) {
+              resolvedX = candidateX;
+              resolvedY = candidateY;
+              found = true;
+              break;
+            }
+          }
+        }
+
+        if (!found) {
+          continue;
+        }
+      }
+
+      const angle = Math.atan2(sy - resolvedY, sx - resolvedX);
 
       indicators.push({
         id: endpoint.id,
         slotId: endpoint.slotId,
-        x,
-        y,
+        x: resolvedX,
+        y: resolvedY,
         angle,
       });
     }
