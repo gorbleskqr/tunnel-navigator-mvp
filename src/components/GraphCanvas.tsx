@@ -79,6 +79,8 @@ const ROUTE_DIRECTION_MARKER_MIN_LENGTH = 44;
 const LEVEL_CHANGE_ICON_MIN_LENGTH = 52;
 const LABEL_ROUTE_OCCLUSION_BUFFER = 8;
 const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
+const TOOL_ACTION_HOLD_MS = 420;
+const TOOLS_HINT_AUTO_HIDE_MS = 2200;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
 const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
@@ -214,6 +216,7 @@ interface EndpointIndicator {
 }
 
 type InfoTab = 'route' | 'legend';
+type HoldToolAction = 'swap' | 'clear';
 
 function approxEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < 0.0001;
@@ -722,6 +725,9 @@ export default function GraphCanvas() {
   const [screenTapPulse, setScreenTapPulse] = useState<TapPulseState | null>(null);
   const [toolsDockOpen, setToolsDockOpen] = useState(false);
   const [toolsPinned, setToolsPinned] = useState(false);
+  const [toolsHintVisible, setToolsHintVisible] = useState(false);
+  const [toolsHintPinned, setToolsHintPinned] = useState(false);
+  const [activeToolHoldAction, setActiveToolHoldAction] = useState<HoldToolAction | null>(null);
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>('route');
   const [expandedLabelSlotId, setExpandedLabelSlotId] = useState<string | null>(null);
@@ -755,6 +761,8 @@ export default function GraphCanvas() {
   const logoHintAnim = useRef(new Animated.Value(0)).current;
   const focusHintAnim = useRef(new Animated.Value(0)).current;
   const toolsDockAnim = useRef(new Animated.Value(0)).current;
+  const swapHoldAnim = useRef(new Animated.Value(0)).current;
+  const clearHoldAnim = useRef(new Animated.Value(0)).current;
   const canvasRef = useRef<View | null>(null);
   const logoHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -763,6 +771,9 @@ export default function GraphCanvas() {
   const labelHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toolsHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toolHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeToolHoldActionRef = useRef<HoldToolAction | null>(null);
 
   slotsRef.current = slots;
   endpointsRef.current = endpoints;
@@ -972,6 +983,44 @@ export default function GraphCanvas() {
       clearTimeout(endpointHoldTimerRef.current);
       endpointHoldTimerRef.current = null;
     }
+  };
+
+  const clearToolsHintTimer = (): void => {
+    if (toolsHintTimerRef.current) {
+      clearTimeout(toolsHintTimerRef.current);
+      toolsHintTimerRef.current = null;
+    }
+  };
+
+  const getToolHoldAnim = (action: HoldToolAction): Animated.Value => {
+    return action === 'swap' ? swapHoldAnim : clearHoldAnim;
+  };
+
+  const clearToolHoldTimer = (): void => {
+    if (toolHoldTimerRef.current) {
+      clearTimeout(toolHoldTimerRef.current);
+      toolHoldTimerRef.current = null;
+    }
+  };
+
+  const cancelToolHold = (): void => {
+    clearToolHoldTimer();
+    const active = activeToolHoldActionRef.current;
+    if (!active) {
+      return;
+    }
+
+    const anim = getToolHoldAnim(active);
+    anim.stopAnimation();
+    Animated.timing(anim, {
+      toValue: 0,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+
+    activeToolHoldActionRef.current = null;
+    setActiveToolHoldAction(null);
   };
 
   const clearLabelHoldTimer = (): void => {
@@ -1978,6 +2027,12 @@ export default function GraphCanvas() {
       if (deletePromptTimerRef.current) {
         clearTimeout(deletePromptTimerRef.current);
       }
+      if (toolsHintTimerRef.current) {
+        clearTimeout(toolsHintTimerRef.current);
+      }
+      if (toolHoldTimerRef.current) {
+        clearTimeout(toolHoldTimerRef.current);
+      }
     };
   }, []);
 
@@ -1999,6 +2054,22 @@ export default function GraphCanvas() {
       useNativeDriver: true,
     }).start();
   }, [toolsDockAnim, toolsDockOpen]);
+
+  useEffect(() => {
+    if (!toolsDockOpen) {
+      cancelToolHold();
+      if (!toolsHintPinned) {
+        setToolsHintVisible(false);
+      }
+      clearToolsHintTimer();
+      return;
+    }
+
+    setToolsHintVisible(true);
+    if (!toolsHintPinned) {
+      setToolsHintAutoHide();
+    }
+  }, [toolsDockOpen, toolsHintPinned]);
 
   useEffect(() => {
     if (routes.length === 0) {
@@ -2638,6 +2709,83 @@ export default function GraphCanvas() {
     }
   };
 
+  const startToolHold = (actionId: HoldToolAction, action: () => void): void => {
+    if (actionId === 'swap' && endpointsRef.current.length !== 2) {
+      return;
+    }
+
+    if (activeToolHoldActionRef.current && activeToolHoldActionRef.current !== actionId) {
+      cancelToolHold();
+    }
+
+    const anim = getToolHoldAnim(actionId);
+    clearToolHoldTimer();
+    anim.stopAnimation();
+    anim.setValue(0);
+
+    activeToolHoldActionRef.current = actionId;
+    setActiveToolHoldAction(actionId);
+
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: TOOL_ACTION_HOLD_MS,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+
+    toolHoldTimerRef.current = setTimeout(() => {
+      if (activeToolHoldActionRef.current !== actionId) {
+        return;
+      }
+
+      activeToolHoldActionRef.current = null;
+      setActiveToolHoldAction(null);
+      clearToolHoldTimer();
+      runToolAction(action);
+
+      anim.stopAnimation();
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }).start();
+    }, TOOL_ACTION_HOLD_MS);
+  };
+
+  const releaseToolHold = (actionId: HoldToolAction): void => {
+    if (activeToolHoldActionRef.current !== actionId) {
+      return;
+    }
+    cancelToolHold();
+  };
+
+  const setToolsHintAutoHide = (): void => {
+    if (toolsHintPinned || !toolsDockOpen) {
+      return;
+    }
+
+    clearToolsHintTimer();
+    toolsHintTimerRef.current = setTimeout(() => {
+      setToolsHintVisible(false);
+      toolsHintTimerRef.current = null;
+    }, TOOLS_HINT_AUTO_HIDE_MS);
+  };
+
+  const toggleToolsHint = (): void => {
+    const nextPinned = !toolsHintPinned;
+    setToolsHintPinned(nextPinned);
+    setToolsHintVisible(true);
+
+    if (nextPinned) {
+      clearToolsHintTimer();
+    } else {
+      setToolsHintAutoHide();
+    }
+
+    triggerHaptic('light');
+  };
+
   const endpointIndicators = useMemo<EndpointIndicator[]>(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
       return [];
@@ -2754,6 +2902,14 @@ export default function GraphCanvas() {
   }, [endpoints, slotById, viewport, viewportSize.height, viewportSize.width]);
 
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
+  const swapHoldFillWidth = swapHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 20],
+  });
+  const clearHoldFillWidth = clearHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 20],
+  });
   const toolsDockTranslateX = toolsDockAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [18, 0],
@@ -3630,25 +3786,83 @@ export default function GraphCanvas() {
                 hitSlop={10}
                 style={({ pressed }) => [
                   styles.toolsDockButton,
+                  styles.toolsDockIconButton,
+                  activeToolHoldAction === 'swap' ? styles.toolsDockButtonActive : null,
                   endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
                 disabled={endpoints.length !== 2}
-                onPress={() => runToolAction(swapEndpoints)}
+                onPressIn={() => startToolHold('swap', swapEndpoints)}
+                onPressOut={() => releaseToolHold('swap')}
+                accessibilityLabel="Hold to swap endpoints"
               >
-                <Text style={styles.toolsDockButtonText}>Swap</Text>
-              </Pressable>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                onPress={() => runToolAction(clearEndpoints)}
-              >
-                <Text style={styles.toolsDockButtonText}>Clear</Text>
+                <View style={styles.toolsDockIconWrap}>
+                  <MaterialCommunityIcons
+                    name="swap-horizontal"
+                    size={18}
+                    color={endpoints.length !== 2 ? '#7489a8' : '#dce8fa'}
+                  />
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      styles.toolsDockIconFillClip,
+                      { width: swapHoldFillWidth },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="swap-horizontal" size={18} color="#8ec5ff" />
+                  </Animated.View>
+                </View>
+                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Swap</Text> : null}
               </Pressable>
               <Pressable
                 hitSlop={10}
                 style={({ pressed }) => [
                   styles.toolsDockButton,
+                  styles.toolsDockIconButton,
+                  activeToolHoldAction === 'clear' ? styles.toolsDockButtonActive : null,
+                  pressed ? styles.dockButtonPressed : null,
+                ]}
+                onPressIn={() => startToolHold('clear', clearEndpoints)}
+                onPressOut={() => releaseToolHold('clear')}
+                accessibilityLabel="Hold to clear endpoints"
+              >
+                <View style={styles.toolsDockIconWrap}>
+                  <MaterialCommunityIcons name="restart" size={18} color="#dce8fa" />
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      styles.toolsDockIconFillClip,
+                      { width: clearHoldFillWidth },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="restart" size={18} color="#8ec5ff" />
+                  </Animated.View>
+                </View>
+                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Clear</Text> : null}
+              </Pressable>
+              <Pressable
+                hitSlop={10}
+                style={({ pressed }) => [
+                  styles.toolsDockButton,
+                  styles.toolsDockIconButton,
+                  toolsHintPinned ? styles.toolsDockButtonActive : null,
+                  pressed ? styles.dockButtonPressed : null,
+                ]}
+                onPress={toggleToolsHint}
+                accessibilityLabel={toolsHintPinned ? 'Hide tool icon hints' : 'Show tool icon hints'}
+              >
+                <MaterialCommunityIcons
+                  name={toolsHintPinned ? 'tooltip-text' : 'tooltip-text-outline'}
+                  size={17}
+                  color={toolsHintPinned ? '#8ec5ff' : '#dce8fa'}
+                />
+                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Hints</Text> : null}
+              </Pressable>
+              <Pressable
+                hitSlop={10}
+                style={({ pressed }) => [
+                  styles.toolsDockButton,
+                  styles.toolsDockIconButton,
                   toolsPinned ? styles.toolsDockButtonActive : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
@@ -3663,6 +3877,7 @@ export default function GraphCanvas() {
                   size={17}
                   color={toolsPinned ? '#8ec5ff' : '#dce8fa'}
                 />
+                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Pin</Text> : null}
               </Pressable>
               {EDIT_LAYOUT_ENABLED ? (
                 <Pressable
@@ -4324,6 +4539,34 @@ const styles = StyleSheet.create({
     backgroundColor: '#1d2c42',
     borderWidth: 1,
     borderColor: '#3b5a84',
+  },
+  toolsDockIconButton: {
+    minWidth: 40,
+    paddingHorizontal: 7,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsDockIconWrap: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsDockIconFillClip: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  toolsDockIconHint: {
+    marginTop: 1,
+    color: '#a7bddc',
+    fontSize: 9,
+    fontWeight: '700',
   },
   toolsDockButtonActive: {
     backgroundColor: '#2a7af5',
