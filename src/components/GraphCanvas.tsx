@@ -64,7 +64,8 @@ const LABEL_AUTO_PAN_MARGIN = 12;
 const LABEL_AUTO_PAN_MAX_SHIFT = 140;
 const WORLD_BOUNDS_PADDING = 180;
 const LABEL_LOW_ZOOM_PROGRESS_THRESHOLD = 0.24;
-const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.58;
+const LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD = 0.5;
+const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.78;
 const HOLD_TO_DELETE_MS = 320;
 const ENDPOINT_INDICATOR_MARGIN = 26;
 const ENDPOINT_INDICATOR_CLEARANCE = 54;
@@ -588,7 +589,7 @@ function getLabelPresentation(
 
     if (!emphasized) {
       const compact = aliasLabels.length > 1
-        ? `${aliasLabels[0]} +${aliasLabels.length - 1}`
+        ? `${aliasLabels[0]} +${aliasLabels.length - 1} more`
         : aliasLabels[0];
       return buildLabelPresentation(compact, {
         minWidth: Math.min(LABEL_MIN_WIDTH, LABEL_JUNCTION_COMPACT_WIDTH),
@@ -703,6 +704,7 @@ export default function GraphCanvas() {
   const introAnim = useRef(new Animated.Value(0)).current;
   const routeGlow = useRef(new Animated.Value(0)).current;
   const routeReveal = useRef(new Animated.Value(0)).current;
+  const routeFlow = useRef(new Animated.Value(0)).current;
   const slotTapPulseAnim = useRef(new Animated.Value(0)).current;
   const screenTapPulseAnim = useRef(new Animated.Value(0)).current;
   const logoHintAnim = useRef(new Animated.Value(0)).current;
@@ -1272,6 +1274,7 @@ export default function GraphCanvas() {
     const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
     const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
     const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
+    const mediumZoom = zoomProgress >= LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD;
     const fullTextZoom = zoomProgress >= LABEL_FULL_TEXT_PROGRESS_THRESHOLD;
     const nearMaxZoom = zoomLimits.maxScale > 0
       && (viewport.scale / zoomLimits.maxScale) >= 0.9;
@@ -1288,11 +1291,16 @@ export default function GraphCanvas() {
 
     for (const slot of slots) {
       const isExpanded = expandedLabelSlotId === slot.id;
-      let emphasized = endpointSlotIds.has(slot.id)
+      const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
+      const isInteractionTarget = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
-        || isExpanded
+        || isExpanded;
+      let emphasized = (
+        isInteractionTarget
+        || nearMaxZoom
         || fullTextZoom
-        || nearMaxZoom;
+        || (mediumZoom && isImportantLowZoom)
+      );
 
       if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
         const expandedLabel = getLabelPresentation(slot, editLayoutMode, true, false);
@@ -1359,6 +1367,7 @@ export default function GraphCanvas() {
     endpointSlotIds,
     expandedLabelSlotId,
     highlightedSlotIds,
+    importantLowZoomSlotIds,
     slots,
     viewport,
     viewportSize.height,
@@ -1918,6 +1927,28 @@ export default function GraphCanvas() {
       useNativeDriver: true,
     }).start();
   }, [routeGlow, routeSignature]);
+
+  useEffect(() => {
+    routeFlow.stopAnimation();
+    routeFlow.setValue(0);
+    if (routes.length === 0) {
+      return;
+    }
+
+    const animation = Animated.loop(
+      Animated.timing(routeFlow, {
+        toValue: 1,
+        duration: 1800,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+      routeFlow.stopAnimation();
+    };
+  }, [routeFlow, routeSignature, routes.length]);
 
   useEffect(() => {
     if (draggingEndpoint && toolsDockOpen && !toolsPinned) {
@@ -2854,6 +2885,10 @@ export default function GraphCanvas() {
                   const highlightedOpacity = revealIndex !== undefined
                     ? Animated.multiply(revealOpacity, routeGlowOpacity)
                     : routeGlowOpacity;
+                  const flowTranslate = routeFlow.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [-24, length + 24],
+                  });
 
                   return (
                     <Animated.View
@@ -2867,6 +2902,18 @@ export default function GraphCanvas() {
                       ]}
                     >
                       <View style={[styles.edgeStroke, strokeStyle]} />
+                      <Animated.View
+                        style={[
+                          styles.edgeFlowPulse,
+                          {
+                            left: -18,
+                            top: strokeTop + Math.max(0, (strokeHeight - 2.2) / 2),
+                            width: clamp(length * 0.3, 18, 54),
+                            height: Math.max(1.8, strokeHeight - 1),
+                            transform: [{ translateX: flowTranslate }],
+                          },
+                        ]}
+                      />
                       {isRampEdge ? (
                         <View
                           style={[
@@ -3057,34 +3104,20 @@ export default function GraphCanvas() {
                       },
                       { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
                       isExitOnly ? styles.slotExitOnly : null,
-                      highlighted ? styles.slotHighlighted : null,
+                      highlighted
+                        ? [
+                          styles.slotHighlighted,
+                          {
+                            shadowColor: isExitOnly
+                              ? '#ffbe70'
+                              : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                          },
+                        ]
+                        : null,
                       isDropTarget ? styles.slotDropPreview : null,
                       isHoldFocused ? styles.slotHoldFocus : null,
                     ]}
                 />
-                {highlighted ? (
-                  <View
-                    style={[
-                      styles.slotHighlightRing,
-                      {
-                        borderColor: isExitOnly
-                          ? '#ffbe70'
-                          : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
-                        shadowColor: isExitOnly
-                          ? '#ffbe70'
-                          : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
-                        borderStyle: isExitOnly ? 'dashed' : 'solid',
-                      },
-                      {
-                        left: -3,
-                        top: -3,
-                        width: slotRadius * 2 + 6,
-                        height: slotRadius * 2 + 6,
-                        borderRadius: slotRadius + 3,
-                      },
-                    ]}
-                  />
-                ) : null}
                 {connectorLength > 2 ? (
                   <View
                     style={[
@@ -3658,6 +3691,11 @@ const styles = StyleSheet.create({
     left: 0,
     borderRadius: 6,
   },
+  edgeFlowPulse: {
+    position: 'absolute',
+    borderRadius: 6,
+    backgroundColor: 'rgba(244, 251, 255, 0.46)',
+  },
   edgeRampRail: {
     position: 'absolute',
     left: 0,
@@ -3735,17 +3773,9 @@ const styles = StyleSheet.create({
   },
   slotHighlighted: {
     backgroundColor: '#21395c',
-    shadowColor: '#8bbdff',
-    shadowOpacity: 0.32,
+    shadowOpacity: 0.44,
     shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 6,
-  },
-  slotHighlightRing: {
-    position: 'absolute',
-    borderWidth: 1.5,
-    shadowOpacity: 0.42,
-    shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 6,
+    shadowRadius: 8,
   },
   slotDropPreview: {
     borderColor: '#f6e05e',
