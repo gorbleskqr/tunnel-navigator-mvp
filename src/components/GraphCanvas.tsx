@@ -2902,9 +2902,9 @@ export default function GraphCanvas() {
   }, [endpoints, slotById, viewport, viewportSize.height, viewportSize.width]);
 
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
-  const swapHoldFillWidth = swapHoldAnim.interpolate({
+  const swapHoldInset = swapHoldAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, 20],
+    outputRange: [10, 0],
   });
   const clearHoldFillWidth = clearHoldAnim.interpolate({
     inputRange: [0, 1],
@@ -3668,7 +3668,7 @@ export default function GraphCanvas() {
             style={[
               styles.focusHintBubble,
               {
-                top: 56 + topInset,
+                top: topControlsTop + 7,
                 opacity: focusHintOpacity,
                 transform: [{ translateX: focusHintTranslateX }],
               },
@@ -3805,8 +3805,11 @@ export default function GraphCanvas() {
                   <Animated.View
                     pointerEvents="none"
                     style={[
-                      styles.toolsDockIconFillClip,
-                      { width: swapHoldFillWidth },
+                      styles.toolsDockIconFillClipCenter,
+                      {
+                        left: swapHoldInset,
+                        right: swapHoldInset,
+                      },
                     ]}
                   >
                     <MaterialCommunityIcons name="swap-horizontal" size={18} color="#8ec5ff" />
@@ -4546,6 +4549,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+    overflow: 'visible',
   },
   toolsDockIconWrap: {
     width: 20,
@@ -4562,11 +4567,24 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     justifyContent: 'center',
   },
+  toolsDockIconFillClipCenter: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   toolsDockIconHint: {
-    marginTop: 1,
+    position: 'absolute',
+    top: -11,
+    left: '50%',
+    width: 40,
+    marginLeft: -20,
     color: '#a7bddc',
     fontSize: 9,
     fontWeight: '700',
+    textAlign: 'center',
   },
   toolsDockButtonActive: {
     backgroundColor: '#2a7af5',
