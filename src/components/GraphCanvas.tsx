@@ -3668,7 +3668,7 @@ export default function GraphCanvas() {
             style={[
               styles.focusHintBubble,
               {
-                top: topControlsTop + 7,
+                top: topControlsTop,
                 opacity: focusHintOpacity,
                 transform: [{ translateX: focusHintTranslateX }],
               },
@@ -3785,9 +3785,7 @@ export default function GraphCanvas() {
               <Pressable
                 hitSlop={10}
                 style={({ pressed }) => [
-                  styles.toolsDockButton,
                   styles.toolsDockIconButton,
-                  activeToolHoldAction === 'swap' ? styles.toolsDockButtonActive : null,
                   endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
@@ -3800,7 +3798,7 @@ export default function GraphCanvas() {
                   <MaterialCommunityIcons
                     name="swap-horizontal"
                     size={18}
-                    color={endpoints.length !== 2 ? '#7489a8' : '#dce8fa'}
+                    color={endpoints.length !== 2 ? '#7489a8' : (activeToolHoldAction === 'swap' ? '#8ec5ff' : '#dce8fa')}
                   />
                   <Animated.View
                     pointerEvents="none"
@@ -3820,9 +3818,7 @@ export default function GraphCanvas() {
               <Pressable
                 hitSlop={10}
                 style={({ pressed }) => [
-                  styles.toolsDockButton,
                   styles.toolsDockIconButton,
-                  activeToolHoldAction === 'clear' ? styles.toolsDockButtonActive : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
                 onPressIn={() => startToolHold('clear', clearEndpoints)}
@@ -3830,7 +3826,11 @@ export default function GraphCanvas() {
                 accessibilityLabel="Hold to clear endpoints"
               >
                 <View style={styles.toolsDockIconWrap}>
-                  <MaterialCommunityIcons name="restart" size={18} color="#dce8fa" />
+                  <MaterialCommunityIcons
+                    name="restart"
+                    size={18}
+                    color={activeToolHoldAction === 'clear' ? '#8ec5ff' : '#dce8fa'}
+                  />
                   <Animated.View
                     pointerEvents="none"
                     style={[
@@ -3846,9 +3846,7 @@ export default function GraphCanvas() {
               <Pressable
                 hitSlop={10}
                 style={({ pressed }) => [
-                  styles.toolsDockButton,
                   styles.toolsDockIconButton,
-                  toolsHintPinned ? styles.toolsDockButtonActive : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
                 onPress={toggleToolsHint}
@@ -3864,9 +3862,7 @@ export default function GraphCanvas() {
               <Pressable
                 hitSlop={10}
                 style={({ pressed }) => [
-                  styles.toolsDockButton,
                   styles.toolsDockIconButton,
-                  toolsPinned ? styles.toolsDockButtonActive : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
                 onPress={() => {
@@ -4384,7 +4380,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#314d72',
     paddingHorizontal: 9,
-    paddingVertical: 6,
+    minHeight: 38,
+    justifyContent: 'center',
   },
   focusHintText: {
     color: '#dce8fa',
@@ -4544,11 +4541,15 @@ const styles = StyleSheet.create({
     borderColor: '#3b5a84',
   },
   toolsDockIconButton: {
-    minWidth: 40,
-    paddingHorizontal: 7,
-    paddingVertical: 6,
+    minWidth: 24,
+    minHeight: 24,
+    paddingHorizontal: 2,
+    paddingVertical: 2,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    borderColor: 'transparent',
     position: 'relative',
     overflow: 'visible',
   },
@@ -4577,7 +4578,7 @@ const styles = StyleSheet.create({
   },
   toolsDockIconHint: {
     position: 'absolute',
-    top: -11,
+    top: -16,
     left: '50%',
     width: 40,
     marginLeft: -20,
