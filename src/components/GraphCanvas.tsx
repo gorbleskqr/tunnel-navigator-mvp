@@ -74,6 +74,8 @@ const DELETE_PROMPT_OFFSET_Y = 52;
 const ROUTE_DIRECTION_MARKER_SPACING = 56;
 const ROUTE_DIRECTION_MARKER_MIN_LENGTH = 44;
 const LEVEL_CHANGE_ICON_MIN_LENGTH = 52;
+const LABEL_ROUTE_OCCLUSION_BUFFER = 8;
+const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
 const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
@@ -164,11 +166,14 @@ interface LabelCandidate {
   alternateBottom: number | null;
   priority: number;
   pinned: boolean;
+  routeAnchored: boolean;
+  occludesHighlightedRoute: boolean;
 }
 
 interface LabelLayout {
   left: number;
   top: number;
+  occludesHighlightedRoute: boolean;
 }
 
 interface LabelPresentation {
@@ -295,6 +300,101 @@ function labelsOverlap(a: LabelCandidate, b: LabelCandidate): boolean {
     || a.left > b.right + 8
     || a.bottom < b.top - 4
     || a.top > b.bottom + 4
+  );
+}
+
+function pointInRect(
+  x: number,
+  y: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): boolean {
+  return x >= left && x <= right && y >= top && y <= bottom;
+}
+
+function segmentCross(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+): number {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+function pointOnSegment(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  px: number,
+  py: number,
+): boolean {
+  return (
+    px >= Math.min(ax, bx) - 0.0001
+    && px <= Math.max(ax, bx) + 0.0001
+    && py >= Math.min(ay, by) - 0.0001
+    && py <= Math.max(ay, by) + 0.0001
+  );
+}
+
+function segmentsIntersect(
+  a1x: number,
+  a1y: number,
+  a2x: number,
+  a2y: number,
+  b1x: number,
+  b1y: number,
+  b2x: number,
+  b2y: number,
+): boolean {
+  const d1 = segmentCross(a1x, a1y, a2x, a2y, b1x, b1y);
+  const d2 = segmentCross(a1x, a1y, a2x, a2y, b2x, b2y);
+  const d3 = segmentCross(b1x, b1y, b2x, b2y, a1x, a1y);
+  const d4 = segmentCross(b1x, b1y, b2x, b2y, a2x, a2y);
+
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return true;
+  }
+
+  if (Math.abs(d1) <= 0.0001 && pointOnSegment(a1x, a1y, a2x, a2y, b1x, b1y)) {
+    return true;
+  }
+  if (Math.abs(d2) <= 0.0001 && pointOnSegment(a1x, a1y, a2x, a2y, b2x, b2y)) {
+    return true;
+  }
+  if (Math.abs(d3) <= 0.0001 && pointOnSegment(b1x, b1y, b2x, b2y, a1x, a1y)) {
+    return true;
+  }
+  if (Math.abs(d4) <= 0.0001 && pointOnSegment(b1x, b1y, b2x, b2y, a2x, a2y)) {
+    return true;
+  }
+
+  return false;
+}
+
+function segmentIntersectsRect(
+  segment: EdgeSegment,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): boolean {
+  if (
+    pointInRect(segment.x1, segment.y1, left, top, right, bottom)
+    || pointInRect(segment.x2, segment.y2, left, top, right, bottom)
+  ) {
+    return true;
+  }
+
+  return (
+    segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, left, top, right, top)
+    || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, right, top, right, bottom)
+    || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, right, bottom, left, bottom)
+    || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, left, bottom, left, top)
   );
 }
 
@@ -911,6 +1011,32 @@ export default function GraphCanvas() {
     return colorByEdge;
   }, [routes]);
 
+  const highlightedRouteScreenSegments = useMemo<EdgeSegment[]>(() => {
+    const segments: EdgeSegment[] = [];
+    if (routeEdgeColors.size === 0) {
+      return segments;
+    }
+
+    for (const edge of edges) {
+      if (!routeEdgeColors.has(edgeKey(edge.from, edge.to))) {
+        continue;
+      }
+
+      const worldSegments = getEdgeSegments(edge, slotById);
+      for (const segment of worldSegments) {
+        const screenSegment: EdgeSegment = {
+          x1: worldToScreenX(segment.x1, viewport),
+          y1: worldToScreenY(segment.y1, viewport),
+          x2: worldToScreenX(segment.x2, viewport),
+          y2: worldToScreenY(segment.y2, viewport),
+        };
+        segments.push(screenSegment);
+      }
+    }
+
+    return segments;
+  }, [edges, routeEdgeColors, slotById, viewport]);
+
   const primaryRouteEdgeFlow = useMemo(() => {
     const flowByKey = new Map<string, { index: number; from: string; to: string }>();
     const primary = routes[0];
@@ -1133,6 +1259,36 @@ export default function GraphCanvas() {
     const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
     const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
     const candidates: LabelCandidate[] = [];
+    const occludesHighlightedRoute = (
+      left: number,
+      top: number,
+      right: number,
+      bottom: number,
+      routeAnchored: boolean,
+    ): boolean => {
+      if (highlightedRouteScreenSegments.length === 0) {
+        return false;
+      }
+
+      const buffer = routeAnchored
+        ? LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER
+        : LABEL_ROUTE_OCCLUSION_BUFFER;
+
+      const bufferedLeft = left - buffer;
+      const bufferedTop = top - buffer;
+      const bufferedRight = right + buffer;
+      const bufferedBottom = bottom + buffer;
+
+      return highlightedRouteScreenSegments.some((segment) => {
+        return segmentIntersectsRect(
+          segment,
+          bufferedLeft,
+          bufferedTop,
+          bufferedRight,
+          bufferedBottom,
+        );
+      });
+    };
 
     for (const slot of slots) {
       const presentation = labelPresentationById.get(slot.id);
@@ -1225,6 +1381,18 @@ export default function GraphCanvas() {
         priority += 26;
       }
 
+      const routeAnchored = isEndpoint || isHighlighted || isExpanded;
+      const candidateOccludesHighlightedRoute = occludesHighlightedRoute(
+        left,
+        top,
+        right,
+        bottom,
+        routeAnchored,
+      );
+      if (candidateOccludesHighlightedRoute && !routeAnchored) {
+        priority -= 72;
+      }
+
       candidates.push({
         id: slot.id,
         left,
@@ -1235,6 +1403,8 @@ export default function GraphCanvas() {
         alternateBottom: Math.abs(alternateTop - top) > 1 ? alternateBottom : null,
         priority,
         pinned: isExpanded,
+        routeAnchored,
+        occludesHighlightedRoute: candidateOccludesHighlightedRoute,
       });
     }
 
@@ -1243,6 +1413,7 @@ export default function GraphCanvas() {
         layouts.set(candidate.id, {
           left: candidate.left,
           top: candidate.top,
+          occludesHighlightedRoute: candidate.occludesHighlightedRoute,
         });
       }
       return layouts;
@@ -1254,6 +1425,11 @@ export default function GraphCanvas() {
       }
       if (b.priority !== a.priority) {
         return b.priority - a.priority;
+      }
+      const aRoutePenalty = a.occludesHighlightedRoute && !a.routeAnchored ? 1 : 0;
+      const bRoutePenalty = b.occludesHighlightedRoute && !b.routeAnchored ? 1 : 0;
+      if (aRoutePenalty !== bRoutePenalty) {
+        return aRoutePenalty - bRoutePenalty;
       }
       if (a.top !== b.top) {
         return a.top - b.top;
@@ -1268,14 +1444,16 @@ export default function GraphCanvas() {
         layouts.set(candidate.id, {
           left: candidate.left,
           top: candidate.top,
+          occludesHighlightedRoute: candidate.occludesHighlightedRoute,
         });
         continue;
       }
 
       let placed: LabelCandidate | null = candidate;
       const collidesPrimary = accepted.some((existing) => labelsOverlap(candidate, existing));
+      const primaryOccludesHighlightedRoute = candidate.occludesHighlightedRoute && !candidate.routeAnchored;
 
-      if (collidesPrimary) {
+      if (collidesPrimary || primaryOccludesHighlightedRoute) {
         if (candidate.alternateTop === null || candidate.alternateBottom === null) {
           placed = null;
         } else {
@@ -1285,9 +1463,20 @@ export default function GraphCanvas() {
             bottom: candidate.alternateBottom,
             alternateTop: null,
             alternateBottom: null,
+            occludesHighlightedRoute: occludesHighlightedRoute(
+              candidate.left,
+              candidate.alternateTop,
+              candidate.right,
+              candidate.alternateBottom,
+              candidate.routeAnchored,
+            ),
           };
           const collidesAlternate = accepted.some((existing) => labelsOverlap(alternateCandidate, existing));
-          placed = collidesAlternate ? null : alternateCandidate;
+          const alternateOccludesHighlightedRoute = (
+            alternateCandidate.occludesHighlightedRoute
+            && !alternateCandidate.routeAnchored
+          );
+          placed = (collidesAlternate || alternateOccludesHighlightedRoute) ? null : alternateCandidate;
         }
       }
 
@@ -1299,6 +1488,7 @@ export default function GraphCanvas() {
       layouts.set(placed.id, {
         left: placed.left,
         top: placed.top,
+        occludesHighlightedRoute: placed.occludesHighlightedRoute,
       });
     }
 
@@ -1309,6 +1499,7 @@ export default function GraphCanvas() {
     endpointSlotIds,
     highlightedSlotIds,
     importantLowZoomSlotIds,
+    highlightedRouteScreenSegments,
     labelPresentationById,
     slots,
     viewport,
@@ -2768,6 +2959,7 @@ export default function GraphCanvas() {
                     style={[
                       styles.slotLabel,
                       highlighted ? styles.slotLabelOnHighlightedRoute : null,
+                      labelLayout.occludesHighlightedRoute ? styles.slotLabelRouteWindow : null,
                       isHoldFocused ? styles.slotLabelFocused : null,
                       {
                         width: labelPresentation.width,
@@ -3541,6 +3733,10 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(14, 26, 40, 0.4)',
     borderColor: 'rgba(209, 228, 255, 0.28)',
     borderWidth: 1,
+  },
+  slotLabelRouteWindow: {
+    backgroundColor: 'rgba(10, 20, 32, 0.3)',
+    borderColor: 'rgba(186, 213, 246, 0.26)',
   },
   slotLabelFocused: {
     backgroundColor: 'rgba(20, 37, 58, 0.75)',
