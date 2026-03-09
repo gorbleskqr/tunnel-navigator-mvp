@@ -3067,6 +3067,15 @@ export default function GraphCanvas() {
                     style={[
                       styles.slotHighlightRing,
                       {
+                        borderColor: isExitOnly
+                          ? '#ffbe70'
+                          : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                        shadowColor: isExitOnly
+                          ? '#ffbe70'
+                          : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                        borderStyle: isExitOnly ? 'dashed' : 'solid',
+                      },
+                      {
                         left: -3,
                         top: -3,
                         width: slotRadius * 2 + 6,
@@ -3734,8 +3743,6 @@ const styles = StyleSheet.create({
   slotHighlightRing: {
     position: 'absolute',
     borderWidth: 1.5,
-    borderColor: 'rgba(247, 251, 255, 0.95)',
-    shadowColor: '#e6f2ff',
     shadowOpacity: 0.42,
     shadowOffset: { width: 0, height: 0 },
     shadowRadius: 6,
