@@ -64,6 +64,7 @@ const LABEL_AUTO_PAN_MARGIN = 12;
 const LABEL_AUTO_PAN_MAX_SHIFT = 140;
 const WORLD_BOUNDS_PADDING = 180;
 const LABEL_LOW_ZOOM_PROGRESS_THRESHOLD = 0.24;
+const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.58;
 const HOLD_TO_DELETE_MS = 320;
 const ENDPOINT_INDICATOR_MARGIN = 26;
 const ENDPOINT_INDICATOR_CLEARANCE = 54;
@@ -431,17 +432,17 @@ function estimateTextWidth(text: string): number {
   let width = 0;
   for (const ch of text) {
     if (ch === ' ') {
-      width += 2.6;
+      width += 2.9;
     } else if (/[ilI1'`,.:;|!]/.test(ch)) {
-      width += 3;
+      width += 3.3;
     } else if (/[MW@#%&]/.test(ch)) {
-      width += 6.9;
+      width += 7.2;
     } else if (/[A-Z0-9]/.test(ch)) {
-      width += 5.8;
+      width += 6.2;
     } else if (/[\/\\()\-\+]/.test(ch)) {
-      width += 4.2;
+      width += 4.5;
     } else {
-      width += 5;
+      width += 5.4;
     }
   }
   return width;
@@ -1271,6 +1272,7 @@ export default function GraphCanvas() {
     const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
     const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
     const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
+    const fullTextZoom = zoomProgress >= LABEL_FULL_TEXT_PROGRESS_THRESHOLD;
     const nearMaxZoom = zoomLimits.maxScale > 0
       && (viewport.scale / zoomLimits.maxScale) >= 0.9;
     const slotScreenById = new Map<string, { x: number; y: number; radius: number }>();
@@ -1289,6 +1291,7 @@ export default function GraphCanvas() {
       let emphasized = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
         || isExpanded
+        || fullTextZoom
         || nearMaxZoom;
 
       if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
@@ -2995,6 +2998,7 @@ export default function GraphCanvas() {
             const isDropTarget = dropPreviewSlotId === slot.id;
             const isExitOnly = slot.node.exitOnly;
             const isHoldFocused = holdFocusSlotId === slot.id;
+            const isExpandedLabel = expandedLabelSlotId === slot.id;
             const slotScreenX = worldToScreenX(slot.x, viewport);
             const slotScreenY = worldToScreenY(slot.y, viewport);
             const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
@@ -3058,6 +3062,20 @@ export default function GraphCanvas() {
                       isHoldFocused ? styles.slotHoldFocus : null,
                     ]}
                 />
+                {highlighted ? (
+                  <View
+                    style={[
+                      styles.slotHighlightRing,
+                      {
+                        left: -3,
+                        top: -3,
+                        width: slotRadius * 2 + 6,
+                        height: slotRadius * 2 + 6,
+                        borderRadius: slotRadius + 3,
+                      },
+                    ]}
+                  />
+                ) : null}
                 {connectorLength > 2 ? (
                   <View
                     style={[
@@ -3073,8 +3091,8 @@ export default function GraphCanvas() {
                 ) : null}
                 {labelLayout && labelPresentation ? (
                   <Text
-                    numberOfLines={labelPresentation.lines}
-                    ellipsizeMode="tail"
+                    numberOfLines={isExpandedLabel ? undefined : labelPresentation.lines}
+                    ellipsizeMode={isExpandedLabel ? 'clip' : 'tail'}
                     style={[
                       styles.slotLabel,
                       highlighted ? styles.slotLabelOnHighlightedRoute : null,
@@ -3710,6 +3728,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#21395c',
     shadowColor: '#8bbdff',
     shadowOpacity: 0.32,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 6,
+  },
+  slotHighlightRing: {
+    position: 'absolute',
+    borderWidth: 1.5,
+    borderColor: 'rgba(247, 251, 255, 0.95)',
+    shadowColor: '#e6f2ff',
+    shadowOpacity: 0.42,
     shadowOffset: { width: 0, height: 0 },
     shadowRadius: 6,
   },
