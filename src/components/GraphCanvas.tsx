@@ -51,16 +51,29 @@ const LABEL_BASE_WIDTH = 124;
 const LABEL_COMPACT_WIDTH = 96;
 const LABEL_JUNCTION_WIDTH = 148;
 const LABEL_JUNCTION_COMPACT_WIDTH = 108;
+const LABEL_JUNCTION_MAX_WIDTH = 248;
 const LABEL_LINE_HEIGHT = 11.2;
 const LABEL_VERTICAL_PADDING = 2;
 const LABEL_VIEWPORT_MARGIN = 20;
 const LABEL_LONG_PRESS_MS = 380;
 const LABEL_EXPAND_DURATION_MS = 1500;
+const LABEL_HOLD_FOCUS_MS = 1400;
+const LABEL_AUTO_PAN_MARGIN = 12;
+const LABEL_AUTO_PAN_MAX_SHIFT = 140;
+const WORLD_BOUNDS_PADDING = 180;
+const LABEL_LOW_ZOOM_PROGRESS_THRESHOLD = 0.24;
 const HOLD_TO_DELETE_MS = 320;
+const ENDPOINT_INDICATOR_MARGIN = 26;
+const ENDPOINT_INDICATOR_CLEARANCE = 54;
+const ENDPOINT_INDICATOR_STEP = 26;
+const ENDPOINT_INDICATOR_TRIGGER_RATIO = 0.72;
 const DELETE_PROMPT_HIDE_MS = 2200;
 const DELETE_PROMPT_WIDTH = 74;
 const DELETE_PROMPT_HEIGHT = 32;
 const DELETE_PROMPT_OFFSET_Y = 52;
+const ROUTE_DIRECTION_MARKER_SPACING = 56;
+const ROUTE_DIRECTION_MARKER_MIN_LENGTH = 44;
+const LEVEL_CHANGE_ICON_MIN_LENGTH = 52;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
 const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
@@ -150,6 +163,7 @@ interface LabelCandidate {
   alternateTop: number | null;
   alternateBottom: number | null;
   priority: number;
+  pinned: boolean;
 }
 
 interface LabelLayout {
@@ -341,16 +355,24 @@ function getLabelPresentation(
       };
     }
 
-    const visibleAliasCount = highZoomExpanded ? 3 : 2;
+    const longestAliasLength = aliasLabels.reduce((longest, current) => {
+      return Math.max(longest, current.length);
+    }, 0);
+    const expandedWidth = clamp(
+      LABEL_JUNCTION_WIDTH + longestAliasLength * 3.1,
+      LABEL_JUNCTION_WIDTH,
+      LABEL_JUNCTION_MAX_WIDTH,
+    );
+    const visibleAliasCount = highZoomExpanded ? 6 : 4;
     const lines = aliasLabels.length > (visibleAliasCount + 1)
       ? [...aliasLabels.slice(0, visibleAliasCount), `+${aliasLabels.length - visibleAliasCount} more`]
       : aliasLabels;
-    const lineCount = Math.min(highZoomExpanded ? 4 : 3, lines.length);
+    const lineCount = Math.min(highZoomExpanded ? 8 : 6, lines.length);
 
     return {
       text: lines.join('\n'),
       lines: lineCount,
-      width: highZoomExpanded ? LABEL_JUNCTION_WIDTH + 18 : LABEL_JUNCTION_WIDTH,
+      width: highZoomExpanded ? Math.min(LABEL_JUNCTION_MAX_WIDTH, expandedWidth + 14) : expandedWidth,
       height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
     };
   }
@@ -364,12 +386,61 @@ function getLabelPresentation(
     };
   }
 
+  const width = clamp(
+    slot.node.label.length * 6 + 26,
+    72,
+    highZoomExpanded ? LABEL_BASE_WIDTH + 16 : LABEL_BASE_WIDTH + 8,
+  );
+  const maxLines = highZoomExpanded ? 4 : 3;
+  const lineCount = estimateWrappedLineCount(slot.node.label, width, maxLines);
+
   return {
     text: slot.node.label,
-    lines: highZoomExpanded ? 5 : 3,
-    width: highZoomExpanded ? LABEL_BASE_WIDTH + 44 : LABEL_BASE_WIDTH + 18,
-    height: LABEL_LINE_HEIGHT * (highZoomExpanded ? 5 : 3) + LABEL_VERTICAL_PADDING * 2,
+    lines: lineCount,
+    width,
+    height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
   };
+}
+
+function estimateWrappedLineCount(text: string, width: number, maxLines: number): number {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return 1;
+  }
+
+  const innerWidth = Math.max(24, width - 10);
+  const approxCharWidth = 4.75;
+  const charsPerLine = Math.max(6, Math.floor(innerWidth / approxCharWidth));
+  const estimated = Math.ceil(trimmed.length / charsPerLine);
+  return Math.max(1, Math.min(maxLines, estimated));
+}
+
+function hasUsableLabel(slot: Slot): boolean {
+  if (slot.node.label.trim().length > 0) {
+    return true;
+  }
+
+  return slot.node.aliases.some((alias) => alias.label.trim().length > 0);
+}
+
+function getDirectionMarkerOffsets(length: number): number[] {
+  if (length < ROUTE_DIRECTION_MARKER_MIN_LENGTH) {
+    return [];
+  }
+
+  const markerCount = Math.max(1, Math.min(3, Math.floor(length / ROUTE_DIRECTION_MARKER_SPACING)));
+  const spacing = length / (markerCount + 1);
+  return Array.from({ length: markerCount }, (_, index) => spacing * (index + 1));
+}
+
+function getStairStepOffsets(length: number): number[] {
+  if (length < 28) {
+    return [];
+  }
+
+  const stepCount = Math.max(2, Math.min(8, Math.floor(length / 20)));
+  const spacing = length / (stepCount + 1);
+  return Array.from({ length: stepCount }, (_, index) => spacing * (index + 1));
 }
 
 export default function GraphCanvas() {
@@ -391,6 +462,7 @@ export default function GraphCanvas() {
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>('route');
   const [expandedLabelSlotId, setExpandedLabelSlotId] = useState<string | null>(null);
+  const [holdFocusSlotId, setHoldFocusSlotId] = useState<string | null>(null);
   const [deletePrompt, setDeletePrompt] = useState<DeletePromptState | null>(null);
   const [logoHintVisible, setLogoHintVisible] = useState(false);
   const [focusHintVisible, setFocusHintVisible] = useState(false);
@@ -423,6 +495,9 @@ export default function GraphCanvas() {
   const logoHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandedLabelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const expandedLabelAutoPanRef = useRef<string | null>(null);
+  const labelHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -558,6 +633,37 @@ export default function GraphCanvas() {
   };
 
   const showExpandedLabel = (slotId: string): void => {
+    const slot = slotById.get(slotId);
+    showHoldFocus(slotId);
+    if (!editLayoutRef.current && slot?.node.type === 'intersection') {
+      triggerTapPulse(slotId);
+      triggerHaptic('light');
+      return;
+    }
+
+    triggerTapPulse(slotId);
+    triggerHaptic('light');
+
+    const currentPresentation = labelPresentationById.get(slotId);
+    const currentLayout = labelLayoutById.get(slotId);
+    const compactPresentation = slot
+      ? getLabelPresentation(slot, editLayoutMode, false, false)
+      : null;
+    const currentlyExpandedAndVisible = Boolean(
+      currentPresentation
+      && currentLayout
+      && compactPresentation
+      && (
+        currentPresentation.lines > compactPresentation.lines
+        || currentPresentation.width > compactPresentation.width + 4
+        || currentPresentation.text !== compactPresentation.text
+      ),
+    );
+    if (!editLayoutRef.current && currentlyExpandedAndVisible) {
+      panLabelIntoView(slotId, `visible:${slotId}`);
+      return;
+    }
+
     setExpandedLabelSlotId(slotId);
     if (expandedLabelTimerRef.current) {
       clearTimeout(expandedLabelTimerRef.current);
@@ -574,13 +680,32 @@ export default function GraphCanvas() {
       clearTimeout(expandedLabelTimerRef.current);
       expandedLabelTimerRef.current = null;
     }
+    expandedLabelAutoPanRef.current = null;
     setExpandedLabelSlotId(null);
+  };
+
+  const showHoldFocus = (slotId: string): void => {
+    setHoldFocusSlotId(slotId);
+    if (holdFocusTimerRef.current) {
+      clearTimeout(holdFocusTimerRef.current);
+    }
+    holdFocusTimerRef.current = setTimeout(() => {
+      setHoldFocusSlotId((previous) => (previous === slotId ? null : previous));
+      holdFocusTimerRef.current = null;
+    }, LABEL_HOLD_FOCUS_MS);
   };
 
   const clearEndpointHoldTimer = (): void => {
     if (endpointHoldTimerRef.current) {
       clearTimeout(endpointHoldTimerRef.current);
       endpointHoldTimerRef.current = null;
+    }
+  };
+
+  const clearLabelHoldTimer = (): void => {
+    if (labelHoldTimerRef.current) {
+      clearTimeout(labelHoldTimerRef.current);
+      labelHoldTimerRef.current = null;
     }
   };
 
@@ -729,7 +854,7 @@ export default function GraphCanvas() {
     }];
   };
 
-  const bounds = useMemo(() => getWorldBounds(slots), [slots]);
+  const bounds = useMemo(() => getWorldBounds(slots, WORLD_BOUNDS_PADDING), [slots]);
   const zoomLimits = useMemo(() => getZoomLimits(slots, viewportSize, bounds), [slots, viewportSize, bounds]);
   const gridSize = GRID_SIZE_OPTIONS[gridSizeIndex] ?? GRID_SIZE_OPTIONS[1];
   const gridMargin = gridSize * 2;
@@ -786,19 +911,32 @@ export default function GraphCanvas() {
     return colorByEdge;
   }, [routes]);
 
-  const primaryRouteEdgeIndex = useMemo(() => {
-    const indexByKey = new Map<string, number>();
+  const primaryRouteEdgeFlow = useMemo(() => {
+    const flowByKey = new Map<string, { index: number; from: string; to: string }>();
     const primary = routes[0];
     if (!primary || primary.path.length < 2) {
-      return indexByKey;
+      return flowByKey;
     }
 
     for (let i = 0; i < primary.path.length - 1; i += 1) {
-      indexByKey.set(edgeKey(primary.path[i], primary.path[i + 1]), i);
+      flowByKey.set(edgeKey(primary.path[i], primary.path[i + 1]), {
+        index: i,
+        from: primary.path[i],
+        to: primary.path[i + 1],
+      });
+    }
+
+    return flowByKey;
+  }, [routes]);
+
+  const primaryRouteEdgeIndex = useMemo(() => {
+    const indexByKey = new Map<string, number>();
+    for (const [key, flow] of primaryRouteEdgeFlow.entries()) {
+      indexByKey.set(key, flow.index);
     }
 
     return indexByKey;
-  }, [routes]);
+  }, [primaryRouteEdgeFlow]);
 
   useEffect(() => {
     const primaryCount = primaryRouteEdgeIndex.size;
@@ -833,6 +971,53 @@ export default function GraphCanvas() {
     return new Set(endpoints.map((endpoint) => endpoint.slotId));
   }, [endpoints]);
 
+  const importantLowZoomSlotIds = useMemo(() => {
+    const degreeBySlotId = new Map<string, number>();
+    const levelChangeConnectedSlotIds = new Set<string>();
+
+    for (const slot of slots) {
+      degreeBySlotId.set(slot.id, 0);
+    }
+
+    for (const edge of edges) {
+      degreeBySlotId.set(edge.from, (degreeBySlotId.get(edge.from) ?? 0) + 1);
+      degreeBySlotId.set(edge.to, (degreeBySlotId.get(edge.to) ?? 0) + 1);
+
+      if (edge.type === 'stairs' || edge.type === 'ramp') {
+        levelChangeConnectedSlotIds.add(edge.from);
+        levelChangeConnectedSlotIds.add(edge.to);
+      }
+    }
+
+    const importantIds = new Set<string>();
+    for (const slot of slots) {
+      const isInteractionTarget = endpointSlotIds.has(slot.id)
+        || highlightedSlotIds.has(slot.id)
+        || expandedLabelSlotId === slot.id
+        || holdFocusSlotId === slot.id;
+      const isPortal = slot.node.type === 'exterior'
+        || slot.node.exitOnly
+        || slot.node.aliases.some((alias) => alias.type === 'exterior');
+      const isLevelChange = slot.node.type === 'stairs' || levelChangeConnectedSlotIds.has(slot.id);
+      const highConnectivityNamed = (degreeBySlotId.get(slot.id) ?? 0) >= 3
+        && slot.node.type !== 'intersection'
+        && hasUsableLabel(slot);
+
+      if (isInteractionTarget || isPortal || isLevelChange || highConnectivityNamed) {
+        importantIds.add(slot.id);
+      }
+    }
+
+    return importantIds;
+  }, [
+    edges,
+    endpointSlotIds,
+    expandedLabelSlotId,
+    highlightedSlotIds,
+    holdFocusSlotId,
+    slots,
+  ]);
+
   const exportTopologyJson = useMemo(() => {
     return JSON.stringify(exportTopology(graph, edges), null, 2);
   }, [edges]);
@@ -843,6 +1028,9 @@ export default function GraphCanvas() {
 
   const labelPresentationById = useMemo(() => {
     const presentation = new Map<string, LabelPresentation>();
+    const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
+    const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
+    const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
     const nearMaxZoom = zoomLimits.maxScale > 0
       && (viewport.scale / zoomLimits.maxScale) >= 0.9;
     const slotScreenById = new Map<string, { x: number; y: number; radius: number }>();
@@ -862,7 +1050,7 @@ export default function GraphCanvas() {
         || expandedLabelSlotId === slot.id
         || nearMaxZoom;
 
-      if (!emphasized && !editLayoutMode && slot.node.type !== 'intersection') {
+      if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
         const expandedLabel = getLabelPresentation(slot, editLayoutMode, true, false);
         const slotScreen = slotScreenById.get(slot.id);
 
@@ -931,6 +1119,7 @@ export default function GraphCanvas() {
     viewport,
     viewportSize.height,
     viewportSize.width,
+    zoomLimits.minScale,
     zoomLimits.maxScale,
   ]);
 
@@ -940,7 +1129,9 @@ export default function GraphCanvas() {
       return layouts;
     }
 
-    const lowZoom = viewport.scale < 0.95;
+    const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
+    const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
+    const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
     const candidates: LabelCandidate[] = [];
 
     for (const slot of slots) {
@@ -952,8 +1143,8 @@ export default function GraphCanvas() {
       const isEndpoint = endpointSlotIds.has(slot.id);
       const isHighlighted = highlightedSlotIds.has(slot.id);
       const isExpanded = expandedLabelSlotId === slot.id;
-      const keepTypeAtLowZoom = slot.node.type === 'building' || isEndpoint || isHighlighted || isExpanded;
-      if (!editLayoutMode && lowZoom && !keepTypeAtLowZoom) {
+      const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
+      if (!editLayoutMode && lowZoom && !isImportantLowZoom) {
         continue;
       }
 
@@ -972,25 +1163,47 @@ export default function GraphCanvas() {
         continue;
       }
 
-      const maxLabelLeft = Math.max(
-        LABEL_VIEWPORT_MARGIN,
-        viewportSize.width - presentation.width - LABEL_VIEWPORT_MARGIN,
-      );
-      const maxLabelTop = Math.max(
-        LABEL_VIEWPORT_MARGIN,
-        viewportSize.height - presentation.height - LABEL_VIEWPORT_MARGIN,
-      );
+      const isPinnedExpanded = isExpanded && !editLayoutMode;
+      const minLabelLeft = isPinnedExpanded
+        ? -presentation.width + LABEL_VIEWPORT_MARGIN
+        : LABEL_VIEWPORT_MARGIN;
+      const maxLabelLeft = isPinnedExpanded
+        ? viewportSize.width - LABEL_VIEWPORT_MARGIN
+        : Math.max(
+          LABEL_VIEWPORT_MARGIN,
+          viewportSize.width - presentation.width - LABEL_VIEWPORT_MARGIN,
+        );
+      const minLabelTop = isPinnedExpanded
+        ? -presentation.height + LABEL_VIEWPORT_MARGIN
+        : LABEL_VIEWPORT_MARGIN;
+      const maxLabelTop = isPinnedExpanded
+        ? viewportSize.height - LABEL_VIEWPORT_MARGIN
+        : Math.max(
+          LABEL_VIEWPORT_MARGIN,
+          viewportSize.height - presentation.height - LABEL_VIEWPORT_MARGIN,
+        );
       const preferredTopBelow = slotScreenY + slotRadius + 7;
       const preferredTopAbove = slotScreenY - slotRadius - presentation.height - 5;
-      const belowTop = clamp(preferredTopBelow, LABEL_VIEWPORT_MARGIN, maxLabelTop);
-      const aboveTop = clamp(preferredTopAbove, LABEL_VIEWPORT_MARGIN, maxLabelTop);
+      const belowTop = clamp(preferredTopBelow, minLabelTop, maxLabelTop);
+      const aboveTop = clamp(preferredTopAbove, minLabelTop, maxLabelTop);
       const useAboveFirst = preferredTopBelow + presentation.height > maxLabelTop;
       const top = useAboveFirst ? aboveTop : belowTop;
       const alternateTop = useAboveFirst ? belowTop : aboveTop;
-      const left = clamp(slotScreenX - presentation.width / 2, LABEL_VIEWPORT_MARGIN, maxLabelLeft);
+      const anchoredLeft = slotScreenX - presentation.width / 2;
+      const left = clamp(anchoredLeft, minLabelLeft, maxLabelLeft);
       const right = left + presentation.width;
       const bottom = top + presentation.height;
       const alternateBottom = alternateTop + presentation.height;
+      const centerDriftX = Math.abs((left + presentation.width / 2) - slotScreenX);
+      const preferredTop = useAboveFirst ? preferredTopAbove : preferredTopBelow;
+      const topDrift = Math.abs(top - preferredTop);
+      if (!isExpanded) {
+        const maxCenterDriftX = Math.max(24, slotRadius + 20);
+        const maxTopDrift = presentation.height + slotRadius + 10;
+        if (centerDriftX > maxCenterDriftX || topDrift > maxTopDrift) {
+          continue;
+        }
+      }
 
       let priority = 0;
       if (isEndpoint) {
@@ -999,11 +1212,17 @@ export default function GraphCanvas() {
       if (isHighlighted) {
         priority += 60;
       }
+      if (isExpanded) {
+        priority += 220;
+      }
       if (slot.node.type === 'building') {
         priority += 20;
       }
       if (slot.node.exitOnly) {
         priority += 5;
+      }
+      if (isImportantLowZoom) {
+        priority += 26;
       }
 
       candidates.push({
@@ -1015,6 +1234,7 @@ export default function GraphCanvas() {
         alternateTop: Math.abs(alternateTop - top) > 1 ? alternateTop : null,
         alternateBottom: Math.abs(alternateTop - top) > 1 ? alternateBottom : null,
         priority,
+        pinned: isExpanded,
       });
     }
 
@@ -1029,6 +1249,9 @@ export default function GraphCanvas() {
     }
 
     candidates.sort((a, b) => {
+      if (a.pinned !== b.pinned) {
+        return a.pinned ? -1 : 1;
+      }
       if (b.priority !== a.priority) {
         return b.priority - a.priority;
       }
@@ -1040,6 +1263,15 @@ export default function GraphCanvas() {
 
     const accepted: LabelCandidate[] = [];
     for (const candidate of candidates) {
+      if (candidate.pinned) {
+        accepted.push(candidate);
+        layouts.set(candidate.id, {
+          left: candidate.left,
+          top: candidate.top,
+        });
+        continue;
+      }
+
       let placed: LabelCandidate | null = candidate;
       const collidesPrimary = accepted.some((existing) => labelsOverlap(candidate, existing));
 
@@ -1076,11 +1308,14 @@ export default function GraphCanvas() {
     expandedLabelSlotId,
     endpointSlotIds,
     highlightedSlotIds,
+    importantLowZoomSlotIds,
     labelPresentationById,
     slots,
     viewport,
     viewportSize.height,
     viewportSize.width,
+    zoomLimits.maxScale,
+    zoomLimits.minScale,
   ]);
 
   useEffect(() => {
@@ -1141,6 +1376,58 @@ export default function GraphCanvas() {
     const clampedViewport = clampViewport({ ...next, scale: clampedScale }, bounds, viewportSizeRef.current);
     setViewport(clampedViewport);
   };
+
+  function panLabelIntoView(slotId: string, panKey: string): void {
+    if (expandedLabelAutoPanRef.current === panKey) {
+      return;
+    }
+
+    const layout = labelLayoutById.get(slotId);
+    const presentation = labelPresentationById.get(slotId);
+    if (!layout || !presentation || viewportSize.width <= 0 || viewportSize.height <= 0) {
+      return;
+    }
+
+    const left = layout.left;
+    const right = layout.left + presentation.width;
+    const top = layout.top;
+    const bottom = layout.top + presentation.height;
+    const maxX = viewportSize.width - LABEL_AUTO_PAN_MARGIN;
+    const maxY = viewportSize.height - LABEL_AUTO_PAN_MARGIN;
+
+    let shiftX = 0;
+    let shiftY = 0;
+    if (left < LABEL_AUTO_PAN_MARGIN) {
+      shiftX = LABEL_AUTO_PAN_MARGIN - left;
+    } else if (right > maxX) {
+      shiftX = maxX - right;
+    }
+    if (top < LABEL_AUTO_PAN_MARGIN) {
+      shiftY = LABEL_AUTO_PAN_MARGIN - top;
+    } else if (bottom > maxY) {
+      shiftY = maxY - bottom;
+    }
+
+    expandedLabelAutoPanRef.current = panKey;
+    if (Math.abs(shiftX) < 1 && Math.abs(shiftY) < 1) {
+      return;
+    }
+
+    setViewportClamped({
+      scale: viewportRef.current.scale,
+      tx: viewportRef.current.tx + clamp(shiftX, -LABEL_AUTO_PAN_MAX_SHIFT, LABEL_AUTO_PAN_MAX_SHIFT),
+      ty: viewportRef.current.ty + clamp(shiftY, -LABEL_AUTO_PAN_MAX_SHIFT, LABEL_AUTO_PAN_MAX_SHIFT),
+    });
+  }
+
+  useEffect(() => {
+    if (!expandedLabelSlotId) {
+      expandedLabelAutoPanRef.current = null;
+      return;
+    }
+
+    panLabelIntoView(expandedLabelSlotId, `expanded:${expandedLabelSlotId}`);
+  }, [expandedLabelSlotId, labelLayoutById, labelPresentationById, viewportSize.height, viewportSize.width]);
 
   const centerOnSlot = (slotId: string, scale?: number): void => {
     const targetSlot = slotById.get(slotId);
@@ -1273,6 +1560,12 @@ export default function GraphCanvas() {
       }
       if (expandedLabelTimerRef.current) {
         clearTimeout(expandedLabelTimerRef.current);
+      }
+      if (holdFocusTimerRef.current) {
+        clearTimeout(holdFocusTimerRef.current);
+      }
+      if (labelHoldTimerRef.current) {
+        clearTimeout(labelHoldTimerRef.current);
       }
       if (endpointHoldTimerRef.current) {
         clearTimeout(endpointHoldTimerRef.current);
@@ -1437,8 +1730,8 @@ export default function GraphCanvas() {
       return;
     }
 
-    clearExpandedLabel();
     hideDeletePrompt();
+    const slot = slotById.get(slotId);
 
     const occupied = endpointsRef.current.some((endpoint) => endpoint.slotId === slotId);
     if (occupied) {
@@ -1454,11 +1747,16 @@ export default function GraphCanvas() {
 
     if (endpointsRef.current.length === 1) {
       const existing = endpointsRef.current[0];
+      const nextEndpointId = existing.id === 'start' ? 'end' : 'start';
+      if (slot?.node.exitOnly && nextEndpointId === 'end') {
+        triggerBlockedFeedback('Exit-only slots can only be a start endpoint.');
+        return;
+      }
       triggerTapPulse(slotId);
       triggerHaptic('light');
       setEndpoints(endpointOrder([
         { id: existing.id === 'end' ? 'end' : 'start', slotId: existing.slotId },
-        { id: existing.id === 'start' ? 'end' : 'start', slotId },
+        { id: nextEndpointId, slotId },
       ]));
       return;
     }
@@ -1475,6 +1773,21 @@ export default function GraphCanvas() {
     const targetSlotId = drag.targetSlotId;
 
     if (!targetSlotId) {
+      if (drag.endpointId === 'end') {
+        const snapRadiusWorld = SNAP_RADIUS_PX / viewportRef.current.scale;
+        const slotHit = getSlotAtWorldPosition(drag.worldX, drag.worldY, snapRadiusWorld);
+        if (slotHit?.slot.node.exitOnly) {
+          triggerBlockedFeedback('Exit-only slots can only be a start endpoint.');
+        }
+      }
+      setDraggingEndpoint(null);
+      draggingEndpointRef.current = null;
+      return;
+    }
+
+    const targetSlot = slotById.get(targetSlotId);
+    if (drag.endpointId === 'end' && targetSlot?.node.exitOnly) {
+      triggerBlockedFeedback('Exit-only slots can only be a start endpoint.');
       setDraggingEndpoint(null);
       draggingEndpointRef.current = null;
       return;
@@ -1522,6 +1835,7 @@ export default function GraphCanvas() {
   const onResponderGrant = (event: GestureResponderEvent): void => {
     const touches = getInteractionPoints(event);
     clearExpandedLabel();
+    clearLabelHoldTimer();
     clearEndpointHoldTimer();
     hideDeletePrompt();
 
@@ -1557,6 +1871,7 @@ export default function GraphCanvas() {
             && !currentInteraction.moved
             && !draggingEndpointRef.current
           ) {
+            triggerHaptic('warning');
             showDeletePromptForEndpoint(endpoint.id);
           }
           endpointHoldTimerRef.current = null;
@@ -1591,6 +1906,23 @@ export default function GraphCanvas() {
       slotTapCandidateId: tapHit?.slot.id ?? null,
       edgeTapCandidateIndex: edgeHitIndex,
     };
+
+    if (!editLayoutRef.current && tapHit?.slot.id) {
+      const slotId = tapHit.slot.id;
+      labelHoldTimerRef.current = setTimeout(() => {
+        const currentInteraction = interactionRef.current;
+        if (
+          currentInteraction.kind === 'pan'
+          && !currentInteraction.moved
+          && currentInteraction.slotTapCandidateId === slotId
+          && !editLayoutRef.current
+        ) {
+          showExpandedLabel(slotId);
+          interactionRef.current = { kind: 'idle' };
+        }
+        labelHoldTimerRef.current = null;
+      }, LABEL_LONG_PRESS_MS);
+    }
   };
 
   const onResponderMove = (event: GestureResponderEvent): void => {
@@ -1598,6 +1930,7 @@ export default function GraphCanvas() {
     const currentInteraction = interactionRef.current;
 
     if (touches.length >= 2) {
+      clearLabelHoldTimer();
       if (currentInteraction.kind !== 'pinch') {
         startPinch(touches[0], touches[1]);
       }
@@ -1646,6 +1979,10 @@ export default function GraphCanvas() {
       const worldY = screenToWorldY(touch.y, currentViewport);
       const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
       const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
+      const targetSlotId = slotHit
+        && !(currentInteraction.endpointId === 'end' && slotHit.slot.node.exitOnly)
+        ? slotHit.slot.id
+        : null;
 
       if (!draggingEndpointRef.current) {
         const originSlot = slotById.get(currentInteraction.originSlotId);
@@ -1658,6 +1995,7 @@ export default function GraphCanvas() {
           };
           setDraggingEndpoint(initialDrag);
           draggingEndpointRef.current = initialDrag;
+          triggerHaptic('light');
         }
       }
 
@@ -1665,7 +2003,7 @@ export default function GraphCanvas() {
         endpointId: currentInteraction.endpointId,
         worldX,
         worldY,
-        targetSlotId: slotHit?.slot.id ?? null,
+        targetSlotId,
       };
 
       setDraggingEndpoint(nextDrag);
@@ -1699,6 +2037,10 @@ export default function GraphCanvas() {
       const dy = touch.y - currentInteraction.startY;
       const moved = currentInteraction.moved || Math.abs(dx) > TAP_MOVE_THRESHOLD || Math.abs(dy) > TAP_MOVE_THRESHOLD;
 
+      if (moved && !currentInteraction.moved) {
+        clearLabelHoldTimer();
+      }
+
       interactionRef.current = {
         ...currentInteraction,
         moved,
@@ -1730,11 +2072,14 @@ export default function GraphCanvas() {
 
   const onResponderRelease = (): void => {
     const currentInteraction = interactionRef.current;
+    clearLabelHoldTimer();
 
     if (currentInteraction.kind === 'endpoint-drag') {
       clearEndpointHoldTimer();
       if (draggingEndpointRef.current) {
         finalizeEndpointDrop();
+      } else if (!currentInteraction.moved && !editLayoutRef.current && !deletePrompt) {
+        showExpandedLabel(currentInteraction.originSlotId);
       }
     }
 
@@ -1758,6 +2103,7 @@ export default function GraphCanvas() {
   };
 
   const onResponderTerminate = (): void => {
+    clearLabelHoldTimer();
     clearEndpointHoldTimer();
     if (interactionRef.current.kind === 'endpoint-drag') {
       setDraggingEndpoint(null);
@@ -1847,6 +2193,13 @@ export default function GraphCanvas() {
         return previous;
       }
 
+      const startSlot = slotById.get(start.slotId);
+      const endSlot = slotById.get(end.slotId);
+      if (startSlot?.node.exitOnly || endSlot?.node.exitOnly) {
+        triggerBlockedFeedback('Cannot swap when an exit-only slot is set as start.');
+        return previous;
+      }
+
       triggerHaptic('light');
       return [
         { id: 'start', slotId: end.slotId },
@@ -1881,9 +2234,20 @@ export default function GraphCanvas() {
       return [];
     }
 
-    const margin = 26;
+    const margin = ENDPOINT_INDICATOR_MARGIN;
     const indicators: EndpointIndicator[] = [];
     const ordered = endpointOrder(endpoints);
+    const visibleEndpointAnchors: Array<{ x: number; y: number }> = [];
+    const endpointRadius = clamp(ENDPOINT_RADIUS * viewport.scale, 11, 40);
+    const triggerOffset = Math.max(8, endpointRadius * ENDPOINT_INDICATOR_TRIGGER_RATIO);
+    const isFarOffscreen = (screenX: number, screenY: number): boolean => {
+      return (
+        screenX < -triggerOffset
+        || screenX > viewportSize.width + triggerOffset
+        || screenY < -triggerOffset
+        || screenY > viewportSize.height + triggerOffset
+      );
+    };
 
     for (const endpoint of ordered) {
       const slot = slotById.get(endpoint.slotId);
@@ -1893,7 +2257,22 @@ export default function GraphCanvas() {
 
       const sx = worldToScreenX(slot.x, viewport);
       const sy = worldToScreenY(slot.y, viewport);
-      const offscreen = sx < margin || sx > viewportSize.width - margin || sy < margin || sy > viewportSize.height - margin;
+      const offscreen = isFarOffscreen(sx, sy);
+
+      if (!offscreen) {
+        visibleEndpointAnchors.push({ x: sx, y: sy });
+      }
+    }
+
+    for (const endpoint of ordered) {
+      const slot = slotById.get(endpoint.slotId);
+      if (!slot) {
+        continue;
+      }
+
+      const sx = worldToScreenX(slot.x, viewport);
+      const sy = worldToScreenY(slot.y, viewport);
+      const offscreen = isFarOffscreen(sx, sy);
 
       if (!offscreen) {
         continue;
@@ -1901,13 +2280,63 @@ export default function GraphCanvas() {
 
       const x = clamp(sx, margin, viewportSize.width - margin);
       const y = clamp(sy, margin, viewportSize.height - margin);
-      const angle = Math.atan2(sy - y, sx - x);
+      const edgeClampedX = x <= margin + 0.5 || x >= viewportSize.width - margin - 0.5;
+      const edgeClampedY = y <= margin + 0.5 || y >= viewportSize.height - margin - 0.5;
+      const adjustAlongY = edgeClampedX || (!edgeClampedX && edgeClampedY);
+
+      const collides = (candidateX: number, candidateY: number): boolean => {
+        const overlapsVisibleEndpoint = visibleEndpointAnchors.some((anchor) => {
+          return distance(candidateX, candidateY, anchor.x, anchor.y) < ENDPOINT_INDICATOR_CLEARANCE;
+        });
+        if (overlapsVisibleEndpoint) {
+          return true;
+        }
+
+        return indicators.some((existing) => {
+          return distance(candidateX, candidateY, existing.x, existing.y) < ENDPOINT_INDICATOR_CLEARANCE;
+        });
+      };
+
+      let resolvedX = x;
+      let resolvedY = y;
+      if (collides(resolvedX, resolvedY)) {
+        const span = adjustAlongY
+          ? Math.max(0, viewportSize.height - margin * 2)
+          : Math.max(0, viewportSize.width - margin * 2);
+        const maxSteps = Math.max(1, Math.ceil(span / ENDPOINT_INDICATOR_STEP));
+        let found = false;
+
+        for (let stepIndex = 1; stepIndex <= maxSteps && !found; stepIndex += 1) {
+          for (const direction of [-1, 1]) {
+            const offset = ENDPOINT_INDICATOR_STEP * stepIndex * direction;
+            const candidateX = adjustAlongY
+              ? x
+              : clamp(x + offset, margin, viewportSize.width - margin);
+            const candidateY = adjustAlongY
+              ? clamp(y + offset, margin, viewportSize.height - margin)
+              : y;
+
+            if (!collides(candidateX, candidateY)) {
+              resolvedX = candidateX;
+              resolvedY = candidateY;
+              found = true;
+              break;
+            }
+          }
+        }
+
+        if (!found) {
+          continue;
+        }
+      }
+
+      const angle = Math.atan2(sy - resolvedY, sx - resolvedX);
 
       indicators.push({
         id: endpoint.id,
         slotId: endpoint.slotId,
-        x,
-        y,
+        x: resolvedX,
+        y: resolvedY,
         angle,
       });
     }
@@ -2050,6 +2479,7 @@ export default function GraphCanvas() {
               const routeColor = routeEdgeColors.get(key);
               const isHighlighted = Boolean(routeColor);
               const revealIndex = primaryRouteEdgeIndex.get(key);
+              const primaryFlow = primaryRouteEdgeFlow.get(key);
               const segments = getEdgeSegments(edge, slotById);
 
               return segments.map((segment, segmentIndex) => {
@@ -2065,13 +2495,38 @@ export default function GraphCanvas() {
                 }
 
                 const angle = Math.atan2(dy, dx);
-                const baseStyle = {
+                const edgeColor = routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f');
+                const isStairsEdge = edge.type === 'stairs';
+                const isRampEdge = edge.type === 'ramp';
+                const strokeHeight = isHighlighted ? 4 : 2;
+                const trackHeight = isRampEdge ? strokeHeight + 3 : strokeHeight + 2;
+                const trackStyle = {
                   left: (x1 + x2) / 2 - length / 2,
-                  top: (y1 + y2) / 2 - (isHighlighted ? 2 : 1),
+                  top: (y1 + y2) / 2 - trackHeight / 2,
                   width: length,
-                  height: isHighlighted ? 4 : 2,
-                  backgroundColor: routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'),
+                  height: trackHeight,
                   transform: [{ rotate: `${angle}rad` }],
+                };
+                const strokeTop = (trackHeight - strokeHeight) / 2;
+                const flowMatchesRenderDirection = primaryFlow
+                  ? primaryFlow.from === edge.from && primaryFlow.to === edge.to
+                  : true;
+                const markerRotation = flowMatchesRenderDirection ? '0rad' : `${Math.PI}rad`;
+                const markerOffsets = (isHighlighted && revealIndex !== undefined)
+                  ? getDirectionMarkerOffsets(length)
+                  : [];
+                const stairStepOffsets = isStairsEdge ? getStairStepOffsets(length) : [];
+                const showLevelChangeIcon = (
+                  (isStairsEdge || isRampEdge)
+                  && length >= LEVEL_CHANGE_ICON_MIN_LENGTH
+                  && viewport.scale > zoomLimits.minScale * 1.04
+                );
+                const strokeStyle = {
+                  top: strokeTop,
+                  width: length,
+                  height: strokeHeight,
+                  backgroundColor: edgeColor,
+                  opacity: isHighlighted ? 0.98 : 0.84,
                 };
 
                 if (isHighlighted) {
@@ -2091,13 +2546,74 @@ export default function GraphCanvas() {
                     <Animated.View
                       key={`${edge.from}-${edge.to}-${index}-${segmentIndex}`}
                       style={[
-                        styles.edge,
-                        baseStyle,
+                        styles.edgeTrack,
+                        trackStyle,
                         {
                           opacity: highlightedOpacity,
                         },
                       ]}
-                    />
+                    >
+                      <View style={[styles.edgeStroke, strokeStyle]} />
+                      {isRampEdge ? (
+                        <View
+                          style={[
+                            styles.edgeRampRail,
+                            {
+                              top: strokeTop + Math.max(2, strokeHeight - 1),
+                              backgroundColor: edgeColor,
+                              opacity: 0.95,
+                            },
+                          ]}
+                        />
+                      ) : null}
+                      {isStairsEdge ? (
+                        stairStepOffsets.map((offset, stepIndex) => (
+                          <View
+                            key={`stairs-step-${edge.from}-${edge.to}-${index}-${segmentIndex}-${stepIndex}`}
+                            style={[
+                              styles.edgeStairsStep,
+                              {
+                                left: offset,
+                                top: strokeTop - 1,
+                                opacity: 0.9,
+                              },
+                            ]}
+                          />
+                        ))
+                      ) : null}
+                      {markerOffsets.map((offset, markerIndex) => (
+                        <View
+                          key={`dir-${edge.from}-${edge.to}-${index}-${segmentIndex}-${markerIndex}`}
+                          style={[
+                            styles.routeDirectionMarkerWrap,
+                            {
+                              left: offset - 9,
+                              top: strokeTop - 6,
+                              transform: [{ rotate: markerRotation }],
+                            },
+                          ]}
+                        >
+                          <MaterialCommunityIcons name="chevron-right" size={13} color="#f5fbff" />
+                        </View>
+                      ))}
+                      {showLevelChangeIcon ? (
+                        <View
+                          style={[
+                            styles.levelChangeBadge,
+                            {
+                              left: length / 2 - 8,
+                              top: strokeTop - 9,
+                            },
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name={isStairsEdge ? 'stairs' : 'trending-up'}
+                            size={10}
+                            color="#f4f8ff"
+                          />
+                        </View>
+                      ) : null}
+                    </Animated.View>
                   );
                 }
 
@@ -2105,13 +2621,61 @@ export default function GraphCanvas() {
                   <View
                     key={`${edge.from}-${edge.to}-${index}-${segmentIndex}`}
                     style={[
-                      styles.edge,
-                      baseStyle,
-                      {
-                        opacity: 0.84,
-                      },
+                      styles.edgeTrack,
+                      trackStyle,
                     ]}
-                  />
+                  >
+                    <View
+                      style={[
+                        styles.edgeStroke,
+                        strokeStyle,
+                      ]}
+                    />
+                    {isRampEdge ? (
+                      <View
+                        style={[
+                          styles.edgeRampRail,
+                          {
+                            top: strokeTop + 2,
+                            backgroundColor: edgeColor,
+                            opacity: 0.9,
+                          },
+                        ]}
+                      />
+                    ) : null}
+                    {isStairsEdge ? (
+                      stairStepOffsets.map((offset, stepIndex) => (
+                        <View
+                          key={`stairs-step-${edge.from}-${edge.to}-${index}-${segmentIndex}-${stepIndex}`}
+                          style={[
+                            styles.edgeStairsStep,
+                            {
+                              left: offset,
+                              top: strokeTop - 1,
+                              opacity: 0.74,
+                            },
+                          ]}
+                        />
+                      ))
+                    ) : null}
+                    {showLevelChangeIcon ? (
+                      <View
+                        style={[
+                          styles.levelChangeBadge,
+                          {
+                            left: length / 2 - 8,
+                            top: strokeTop - 9,
+                          },
+                        ]}
+                      >
+                        <MaterialCommunityIcons
+                          name={isStairsEdge ? 'stairs' : 'trending-up'}
+                          size={10}
+                          color="#f4f8ff"
+                        />
+                      </View>
+                    ) : null}
+                  </View>
                 );
               });
             })}
@@ -2120,11 +2684,42 @@ export default function GraphCanvas() {
             const highlighted = highlightedSlotIds.has(slot.id);
             const isDropTarget = dropPreviewSlotId === slot.id;
             const isExitOnly = slot.node.exitOnly;
+            const isHoldFocused = holdFocusSlotId === slot.id;
             const slotScreenX = worldToScreenX(slot.x, viewport);
             const slotScreenY = worldToScreenY(slot.y, viewport);
             const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
             const labelLayout = labelLayoutById.get(slot.id);
             const labelPresentation = labelPresentationById.get(slot.id);
+            const labelLeftLocal = labelLayout ? labelLayout.left - (slotScreenX - slotRadius) : 0;
+            const labelTopLocal = labelLayout ? labelLayout.top - (slotScreenY - slotRadius) : 0;
+            const labelRightLocal = labelLeftLocal + (labelPresentation?.width ?? 0);
+            const labelBottomLocal = labelTopLocal + (labelPresentation?.height ?? 0);
+            const slotCenterX = slotRadius;
+            const slotCenterY = slotRadius;
+            let connectorLength = 0;
+            let connectorLeft = 0;
+            let connectorTop = 0;
+            let connectorAngle = 0;
+            if (isHoldFocused && labelLayout && labelPresentation) {
+              const targetX = clamp(slotCenterX, labelLeftLocal, labelRightLocal);
+              const targetY = slotCenterY < labelTopLocal
+                ? labelTopLocal
+                : slotCenterY > labelBottomLocal
+                  ? labelBottomLocal
+                  : clamp(slotCenterY, labelTopLocal, labelBottomLocal);
+              const vx = targetX - slotCenterX;
+              const vy = targetY - slotCenterY;
+              const rawLength = Math.sqrt(vx * vx + vy * vy);
+              if (rawLength > 2) {
+                const outward = Math.max(0, slotRadius - 2);
+                const startX = slotCenterX + (vx / rawLength) * outward;
+                const startY = slotCenterY + (vy / rawLength) * outward;
+                connectorLength = Math.max(0, rawLength - outward + 2);
+                connectorLeft = startX;
+                connectorTop = startY - 0.75;
+                connectorAngle = Math.atan2(vy, vx);
+              }
+            }
 
             return (
               <View
@@ -2148,21 +2743,37 @@ export default function GraphCanvas() {
                       },
                       { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
                       isExitOnly ? styles.slotExitOnly : null,
-                    highlighted ? styles.slotHighlighted : null,
-                    isDropTarget ? styles.slotDropPreview : null,
-                  ]}
+                      highlighted ? styles.slotHighlighted : null,
+                      isDropTarget ? styles.slotDropPreview : null,
+                      isHoldFocused ? styles.slotHoldFocus : null,
+                    ]}
                 />
+                {connectorLength > 2 ? (
+                  <View
+                    style={[
+                      styles.slotLabelConnector,
+                      {
+                        left: connectorLeft,
+                        top: connectorTop,
+                        width: connectorLength,
+                        transform: [{ rotate: `${connectorAngle}rad` }],
+                      },
+                    ]}
+                  />
+                ) : null}
                 {labelLayout && labelPresentation ? (
                   <Text
                     numberOfLines={labelPresentation.lines}
                     ellipsizeMode="tail"
                     style={[
                       styles.slotLabel,
+                      highlighted ? styles.slotLabelOnHighlightedRoute : null,
+                      isHoldFocused ? styles.slotLabelFocused : null,
                       {
                         width: labelPresentation.width,
                         minHeight: labelPresentation.height,
-                        left: labelLayout.left - (slotScreenX - slotRadius),
-                        top: labelLayout.top - (slotScreenY - slotRadius),
+                        left: labelLeftLocal,
+                        top: labelTopLocal,
                       },
                     ]}
                   >
@@ -2287,7 +2898,12 @@ export default function GraphCanvas() {
                   },
                 ]}
               >
-                <Text style={styles.endpointIndicatorArrow}>{'>'}</Text>
+                <MaterialCommunityIcons
+                  name="chevron-right"
+                  size={18}
+                  color="#dce8fa"
+                  style={styles.endpointIndicatorArrowIcon}
+                />
               </View>
             </Pressable>
           );
@@ -2459,10 +3075,12 @@ export default function GraphCanvas() {
                 </View>
                 <View style={styles.legendRow}>
                   <View style={[styles.legendEdgeSwatch, { backgroundColor: EDGE_TYPE_COLORS.ramp }]} />
+                  <MaterialCommunityIcons name="trending-up" size={12} color="#dbe8fb" style={styles.legendEdgeIcon} />
                   <Text style={styles.legendRowText}>Ramp</Text>
                 </View>
                 <View style={styles.legendRow}>
                   <View style={[styles.legendEdgeSwatch, { backgroundColor: EDGE_TYPE_COLORS.stairs }]} />
+                  <MaterialCommunityIcons name="stairs" size={12} color="#dbe8fb" style={styles.legendEdgeIcon} />
                   <Text style={styles.legendRowText}>Stairs</Text>
                 </View>
 
@@ -2477,6 +3095,10 @@ export default function GraphCanvas() {
                 <View style={styles.legendRow}>
                   <View style={[styles.legendEdgeSwatch, { backgroundColor: SHARED_ROUTE_COLOR }]} />
                   <Text style={styles.legendRowText}>Shared edge across paths</Text>
+                </View>
+                <View style={styles.legendRow}>
+                  <MaterialCommunityIcons name="chevron-right" size={14} color="#f4f8ff" />
+                  <Text style={styles.legendRowText}>Primary path travel direction</Text>
                 </View>
               </View>
             )}
@@ -2689,9 +3311,50 @@ const styles = StyleSheet.create({
   sceneLayer: {
     ...StyleSheet.absoluteFillObject,
   },
-  edge: {
+  edgeTrack: {
     position: 'absolute',
+    overflow: 'visible',
+  },
+  edgeStroke: {
+    position: 'absolute',
+    left: 0,
     borderRadius: 6,
+  },
+  edgeRampRail: {
+    position: 'absolute',
+    left: 0,
+    width: '100%',
+    height: 1.2,
+    borderRadius: 1,
+  },
+  edgeStairsStep: {
+    position: 'absolute',
+    width: 1.3,
+    height: 6,
+    borderRadius: 1,
+    backgroundColor: '#f9edf0',
+  },
+  routeDirectionMarkerWrap: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  levelChangeBadge: {
+    position: 'absolute',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: 'rgba(10, 18, 30, 0.86)',
+    borderWidth: 1,
+    borderColor: 'rgba(191, 214, 247, 0.68)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#0a1524',
+    shadowOpacity: 0.25,
+    shadowOffset: { width: 0, height: 1 },
+    shadowRadius: 3,
   },
   gridLineVertical: {
     position: 'absolute',
@@ -2741,20 +3404,46 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     backgroundColor: '#3c3416',
   },
+  slotHoldFocus: {
+    borderColor: '#d9e9ff',
+    borderWidth: 3,
+    backgroundColor: '#2a476c',
+    shadowColor: '#9ec5ff',
+    shadowOpacity: 0.45,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 8,
+    transform: [{ scale: 1.03 }],
+  },
+  slotLabelConnector: {
+    position: 'absolute',
+    height: 1.5,
+    borderRadius: 2,
+    backgroundColor: 'rgba(216, 231, 255, 0.88)',
+    zIndex: 2,
+  },
   slotLabel: {
     position: 'absolute',
     zIndex: 3,
-    paddingHorizontal: 4,
-    paddingVertical: LABEL_VERTICAL_PADDING,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
     borderRadius: 6,
-    backgroundColor: 'rgba(11, 20, 31, 0.56)',
-    color: '#a3b8d8',
+    backgroundColor: 'rgba(16, 29, 46, 0.72)',
+    borderColor: 'rgba(140, 171, 216, 0.34)',
+    borderWidth: 1,
+    color: '#c6daf7',
     fontSize: 8.8,
+    fontWeight: '600',
+    letterSpacing: 0.1,
     textAlign: 'center',
     lineHeight: LABEL_LINE_HEIGHT,
+    includeFontPadding: false,
     textShadowColor: 'rgba(3, 8, 14, 0.65)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 1,
+    shadowColor: '#0b1524',
+    shadowOpacity: 0.35,
+    shadowOffset: { width: 0, height: 1 },
+    shadowRadius: 4,
   },
   endpointWrap: {
     position: 'absolute',
@@ -2845,12 +3534,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  endpointIndicatorArrow: {
+  endpointIndicatorArrowIcon: {
     marginLeft: 25,
-    color: '#dce8fa',
-    fontSize: 16,
-    fontWeight: '700',
-    lineHeight: 16,
+  },
+  slotLabelOnHighlightedRoute: {
+    backgroundColor: 'rgba(14, 26, 40, 0.4)',
+    borderColor: 'rgba(209, 228, 255, 0.28)',
+    borderWidth: 1,
+  },
+  slotLabelFocused: {
+    backgroundColor: 'rgba(20, 37, 58, 0.75)',
+    borderColor: 'rgba(204, 225, 255, 0.78)',
+    borderWidth: 1,
+    color: '#e3efff',
+    shadowColor: '#9ec8ff',
+    shadowOpacity: 0.3,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 6,
   },
   deletePrompt: {
     position: 'absolute',
@@ -3059,6 +3759,9 @@ const styles = StyleSheet.create({
     width: 26,
     height: 4,
     borderRadius: 3,
+  },
+  legendEdgeIcon: {
+    marginLeft: 6,
   },
   legendRouteSwatchRow: {
     flexDirection: 'row',
