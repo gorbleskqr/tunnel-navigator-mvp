@@ -2006,6 +2006,10 @@ export default function GraphCanvas() {
 
     setDraggingEndpoint(null);
     draggingEndpointRef.current = null;
+    const droppedSlot = slotById.get(targetSlotId);
+    if (!editLayoutRef.current && droppedSlot && hasUsableLabel(droppedSlot)) {
+      showExpandedLabel(targetSlotId);
+    }
     triggerHaptic('light');
   };
 
@@ -3588,8 +3592,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#2f2415',
   },
   slotHighlighted: {
-    borderColor: '#ffffff',
     backgroundColor: '#21395c',
+    shadowColor: '#8bbdff',
+    shadowOpacity: 0.32,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 6,
   },
   slotDropPreview: {
     borderColor: '#f6e05e',
