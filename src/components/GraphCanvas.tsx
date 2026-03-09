@@ -79,8 +79,8 @@ const ROUTE_DIRECTION_MARKER_MIN_LENGTH = 44;
 const LEVEL_CHANGE_ICON_MIN_LENGTH = 52;
 const LABEL_ROUTE_OCCLUSION_BUFFER = 8;
 const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
-const TOOLS_DOCK_ICON_SIZE = 22;
-const TOOLS_DOCK_ICON_WRAP_SIZE = 24;
+const TOOLS_DOCK_ICON_SIZE = 28;
+const TOOLS_DOCK_ICON_WRAP_SIZE = 32;
 const TOOLS_DOCK_ICON_HALF_WRAP = TOOLS_DOCK_ICON_WRAP_SIZE / 2;
 const TOOL_ACTION_HOLD_MS = 420;
 const TOOLS_HINT_AUTO_HIDE_MS = 2200;
@@ -4544,8 +4544,8 @@ const styles = StyleSheet.create({
     borderColor: '#3b5a84',
   },
   toolsDockIconButton: {
-    minWidth: 24,
-    minHeight: 24,
+    minWidth: TOOLS_DOCK_ICON_WRAP_SIZE,
+    minHeight: TOOLS_DOCK_ICON_WRAP_SIZE,
     paddingHorizontal: 2,
     paddingVertical: 2,
     alignItems: 'center',
