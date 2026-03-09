@@ -2060,7 +2060,7 @@ export default function GraphCanvas() {
       toValue: 1,
       duration: 680,
       easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
   }, [routeGlow, routeSignature]);
 
