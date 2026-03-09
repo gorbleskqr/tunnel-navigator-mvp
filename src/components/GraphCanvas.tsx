@@ -180,6 +180,12 @@ interface LabelLayout {
   occludesHighlightedRoute: boolean;
 }
 
+interface ExpandedLabelAnchor {
+  slotId: string;
+  left: number;
+  top: number;
+}
+
 interface LabelPresentation {
   text: string;
   lines: number;
@@ -700,6 +706,7 @@ export default function GraphCanvas() {
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>('route');
   const [expandedLabelSlotId, setExpandedLabelSlotId] = useState<string | null>(null);
+  const [expandedLabelAnchor, setExpandedLabelAnchor] = useState<ExpandedLabelAnchor | null>(null);
   const [holdFocusSlotId, setHoldFocusSlotId] = useState<string | null>(null);
   const [deletePrompt, setDeletePrompt] = useState<DeletePromptState | null>(null);
   const [logoHintVisible, setLogoHintVisible] = useState(false);
@@ -724,7 +731,6 @@ export default function GraphCanvas() {
   const introAnim = useRef(new Animated.Value(0)).current;
   const routeGlow = useRef(new Animated.Value(0)).current;
   const routeReveal = useRef(new Animated.Value(0)).current;
-  const routeFlow = useRef(new Animated.Value(0)).current;
   const slotTapPulseAnim = useRef(new Animated.Value(0)).current;
   const screenTapPulseAnim = useRef(new Animated.Value(0)).current;
   const logoHintAnim = useRef(new Animated.Value(0)).current;
@@ -901,6 +907,15 @@ export default function GraphCanvas() {
       return;
     }
 
+    if (currentLayout) {
+      setExpandedLabelAnchor({
+        slotId,
+        left: currentLayout.left,
+        top: currentLayout.top,
+      });
+    } else {
+      setExpandedLabelAnchor(null);
+    }
     setExpandedLabelSlotId(slotId);
     if (expandedLabelTimerRef.current) {
       clearTimeout(expandedLabelTimerRef.current);
@@ -918,6 +933,7 @@ export default function GraphCanvas() {
       expandedLabelTimerRef.current = null;
     }
     expandedLabelAutoPanRef.current = null;
+    setExpandedLabelAnchor(null);
     setExpandedLabelSlotId(null);
   };
 
@@ -1410,6 +1426,7 @@ export default function GraphCanvas() {
     const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
     const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
     const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
+    const fullTextZoom = zoomProgress >= LABEL_FULL_TEXT_PROGRESS_THRESHOLD;
     const candidates: LabelCandidate[] = [];
     const occludesHighlightedRoute = (
       left: number,
@@ -1495,13 +1512,22 @@ export default function GraphCanvas() {
       const belowTop = clamp(preferredTopBelow, minLabelTop, maxLabelTop);
       const aboveTop = clamp(preferredTopAbove, minLabelTop, maxLabelTop);
       const useAboveFirst = preferredTopBelow + presentation.height > maxLabelTop;
-      const top = useAboveFirst ? aboveTop : belowTop;
-      const alternateTop = useAboveFirst ? belowTop : aboveTop;
+      let top = useAboveFirst ? aboveTop : belowTop;
+      let alternateTop: number | null = useAboveFirst ? belowTop : aboveTop;
       const anchoredLeft = slotScreenX - presentation.width / 2;
-      const left = clamp(anchoredLeft, minLabelLeft, maxLabelLeft);
+      let left = clamp(anchoredLeft, minLabelLeft, maxLabelLeft);
+      if (
+        isPinnedExpanded
+        && expandedLabelAnchor
+        && expandedLabelAnchor.slotId === slot.id
+      ) {
+        left = expandedLabelAnchor.left;
+        top = expandedLabelAnchor.top;
+        alternateTop = null;
+      }
       const right = left + presentation.width;
       const bottom = top + presentation.height;
-      const alternateBottom = alternateTop + presentation.height;
+      const alternateBottom = alternateTop === null ? null : (alternateTop + presentation.height);
       const centerDriftX = Math.abs((left + presentation.width / 2) - slotScreenX);
       const preferredTop = useAboveFirst ? preferredTopAbove : preferredTopBelow;
       const topDrift = Math.abs(top - preferredTop);
@@ -1527,6 +1553,9 @@ export default function GraphCanvas() {
         priority += 20;
       } else if (slot.node.type === 'junction') {
         priority += 10;
+        if (isImportantLowZoom && !isExpanded && !fullTextZoom) {
+          priority += 24;
+        }
       }
       if (slot.node.exitOnly) {
         priority += 5;
@@ -1553,8 +1582,10 @@ export default function GraphCanvas() {
         top,
         right,
         bottom,
-        alternateTop: Math.abs(alternateTop - top) > 1 ? alternateTop : null,
-        alternateBottom: Math.abs(alternateTop - top) > 1 ? alternateBottom : null,
+        alternateTop: alternateTop !== null && Math.abs(alternateTop - top) > 1 ? alternateTop : null,
+        alternateBottom: alternateTop !== null && alternateBottom !== null && Math.abs(alternateTop - top) > 1
+          ? alternateBottom
+          : null,
         priority,
         pinned: isExpanded,
         routeAnchored,
@@ -1662,6 +1693,7 @@ export default function GraphCanvas() {
     return layouts;
   }, [
     editLayoutMode,
+    expandedLabelAnchor,
     expandedLabelSlotId,
     endpointSlotIds,
     highlightedSlotIds,
@@ -1967,28 +1999,6 @@ export default function GraphCanvas() {
       useNativeDriver: true,
     }).start();
   }, [routeGlow, routeSignature]);
-
-  useEffect(() => {
-    routeFlow.stopAnimation();
-    routeFlow.setValue(0);
-    if (routes.length === 0) {
-      return;
-    }
-
-    const animation = Animated.loop(
-      Animated.timing(routeFlow, {
-        toValue: 1,
-        duration: 1800,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }),
-    );
-    animation.start();
-    return () => {
-      animation.stop();
-      routeFlow.stopAnimation();
-    };
-  }, [routeFlow, routeSignature, routes.length]);
 
   useEffect(() => {
     if (draggingEndpoint && toolsDockOpen && !toolsPinned) {
@@ -2925,10 +2935,16 @@ export default function GraphCanvas() {
                   const highlightedOpacity = revealIndex !== undefined
                     ? Animated.multiply(revealOpacity, routeGlowOpacity)
                     : routeGlowOpacity;
-                  const flowTranslate = routeFlow.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [-24, length + 24],
-                  });
+                  const segmentFillProgress = revealIndex !== undefined
+                    ? routeReveal.interpolate({
+                      inputRange: [revealIndex, revealIndex + 1],
+                      outputRange: [0, 1],
+                      extrapolate: 'clamp',
+                    })
+                    : 1;
+                  const fillWidth = revealIndex !== undefined
+                    ? Animated.multiply(segmentFillProgress, length)
+                    : length;
 
                   return (
                     <Animated.View
@@ -2944,13 +2960,13 @@ export default function GraphCanvas() {
                       <View style={[styles.edgeStroke, strokeStyle]} />
                       <Animated.View
                         style={[
-                          styles.edgeFlowPulse,
+                          styles.edgeFlowFill,
                           {
-                            left: -18,
-                            top: strokeTop + Math.max(0, (strokeHeight - 2.2) / 2),
-                            width: clamp(length * 0.3, 18, 54),
-                            height: Math.max(1.8, strokeHeight - 1),
-                            transform: [{ translateX: flowTranslate }],
+                            top: strokeTop + Math.max(0, (strokeHeight - 0.2) / 2),
+                            height: Math.max(1, strokeHeight - 0.3),
+                            width: fillWidth,
+                            left: flowMatchesRenderDirection ? 0 : undefined,
+                            right: flowMatchesRenderDirection ? undefined : 0,
                           },
                         ]}
                       />
@@ -3731,10 +3747,10 @@ const styles = StyleSheet.create({
     left: 0,
     borderRadius: 6,
   },
-  edgeFlowPulse: {
+  edgeFlowFill: {
     position: 'absolute',
     borderRadius: 6,
-    backgroundColor: 'rgba(244, 251, 255, 0.46)',
+    backgroundColor: 'rgba(244, 251, 255, 0.56)',
   },
   edgeRampRail: {
     position: 'absolute',
@@ -3812,10 +3828,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#2f2415',
   },
   slotHighlighted: {
-    backgroundColor: '#21395c',
-    shadowOpacity: 0.44,
+    backgroundColor: '#2a4f7c',
+    borderWidth: 2.8,
+    shadowOpacity: 0.6,
     shadowOffset: { width: 0, height: 0 },
-    shadowRadius: 8,
+    shadowRadius: 11,
+    elevation: 7,
   },
   slotDropPreview: {
     borderColor: '#f6e05e',
