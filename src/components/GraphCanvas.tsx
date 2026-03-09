@@ -53,7 +53,9 @@ const LABEL_JUNCTION_WIDTH = 148;
 const LABEL_JUNCTION_COMPACT_WIDTH = 108;
 const LABEL_JUNCTION_MAX_WIDTH = 248;
 const LABEL_LINE_HEIGHT = 11.2;
-const LABEL_VERTICAL_PADDING = 2;
+const LABEL_VERTICAL_PADDING = 1;
+const LABEL_HORIZONTAL_PADDING = 12;
+const LABEL_MIN_WIDTH = 56;
 const LABEL_VIEWPORT_MARGIN = 20;
 const LABEL_LONG_PRESS_MS = 380;
 const LABEL_EXPAND_DURATION_MS = 1500;
@@ -181,6 +183,12 @@ interface LabelPresentation {
   lines: number;
   width: number;
   height: number;
+}
+
+interface LabelBuildOptions {
+  maxWidth: number;
+  minWidth: number;
+  maxLines: number;
 }
 
 interface TapPulseState {
@@ -418,6 +426,135 @@ function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
   ];
 }
 
+function estimateTextWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    if (ch === ' ') {
+      width += 2.6;
+    } else if (/[ilI1'`,.:;|!]/.test(ch)) {
+      width += 3;
+    } else if (/[MW@#%&]/.test(ch)) {
+      width += 6.9;
+    } else if (/[A-Z0-9]/.test(ch)) {
+      width += 5.8;
+    } else if (/[\/\\()\-\+]/.test(ch)) {
+      width += 4.2;
+    } else {
+      width += 5;
+    }
+  }
+  return width;
+}
+
+function trimLineToWidth(text: string, maxInnerWidth: number): string {
+  if (estimateTextWidth(text) <= maxInnerWidth) {
+    return text;
+  }
+
+  let trimmed = text.trimEnd();
+  const ellipsis = '...';
+  while (trimmed.length > 0 && estimateTextWidth(`${trimmed}${ellipsis}`) > maxInnerWidth) {
+    trimmed = trimmed.slice(0, -1);
+  }
+
+  return `${trimmed}${ellipsis}`;
+}
+
+function wrapLongToken(token: string, maxInnerWidth: number): string[] {
+  if (token.length === 0) {
+    return [''];
+  }
+
+  const lines: string[] = [];
+  let current = '';
+  for (const ch of token) {
+    const candidate = `${current}${ch}`;
+    if (current.length > 0 && estimateTextWidth(candidate) > maxInnerWidth) {
+      lines.push(current);
+      current = ch;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) {
+    lines.push(current);
+  }
+
+  return lines;
+}
+
+function wrapTextToLines(text: string, maxInnerWidth: number, maxLines: number): string[] {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return [''];
+  }
+
+  const rawLines = trimmed.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  const sourceLines = rawLines.length > 0 ? rawLines : [trimmed];
+  const wrapped: string[] = [];
+
+  for (const sourceLine of sourceLines) {
+    const words = sourceLine.split(/\s+/).filter((word) => word.length > 0);
+    if (words.length === 0) {
+      wrapped.push('');
+      continue;
+    }
+
+    let current = '';
+    for (const word of words) {
+      const next = current.length > 0 ? `${current} ${word}` : word;
+      if (estimateTextWidth(next) <= maxInnerWidth) {
+        current = next;
+        continue;
+      }
+
+      if (current.length > 0) {
+        wrapped.push(current);
+        current = '';
+      }
+
+      if (estimateTextWidth(word) <= maxInnerWidth) {
+        current = word;
+      } else {
+        const tokenParts = wrapLongToken(word, maxInnerWidth);
+        wrapped.push(...tokenParts.slice(0, -1));
+        current = tokenParts[tokenParts.length - 1] ?? '';
+      }
+    }
+
+    if (current.length > 0) {
+      wrapped.push(current);
+    }
+  }
+
+  if (wrapped.length <= maxLines) {
+    return wrapped;
+  }
+
+  const limited = wrapped.slice(0, maxLines);
+  const lastIndex = limited.length - 1;
+  limited[lastIndex] = trimLineToWidth(limited[lastIndex], maxInnerWidth);
+  return limited;
+}
+
+function buildLabelPresentation(text: string, options: LabelBuildOptions): LabelPresentation {
+  const maxInnerWidth = Math.max(24, options.maxWidth - LABEL_HORIZONTAL_PADDING);
+  const lines = wrapTextToLines(text, maxInnerWidth, options.maxLines);
+  const widestLine = lines.reduce((widest, line) => Math.max(widest, estimateTextWidth(line)), 0);
+  const width = clamp(
+    Math.ceil(widestLine + LABEL_HORIZONTAL_PADDING),
+    options.minWidth,
+    options.maxWidth,
+  );
+
+  return {
+    text: lines.join('\n'),
+    lines: Math.max(1, lines.length),
+    width,
+    height: LABEL_LINE_HEIGHT * Math.max(1, lines.length) + LABEL_VERTICAL_PADDING * 2,
+  };
+}
+
 function getLabelPresentation(
   slot: Slot,
   editLayoutMode: boolean,
@@ -447,72 +584,45 @@ function getLabelPresentation(
     }
 
     if (!emphasized) {
-      return {
-        text: aliasLabels.length > 1 ? `${aliasLabels[0]} +${aliasLabels.length - 1}` : aliasLabels[0],
-        lines: 1,
-        width: LABEL_JUNCTION_COMPACT_WIDTH,
-        height: LABEL_LINE_HEIGHT + LABEL_VERTICAL_PADDING * 2,
-      };
+      const compact = aliasLabels.length > 1
+        ? `${aliasLabels[0]} +${aliasLabels.length - 1}`
+        : aliasLabels[0];
+      return buildLabelPresentation(compact, {
+        minWidth: Math.min(LABEL_MIN_WIDTH, LABEL_JUNCTION_COMPACT_WIDTH),
+        maxWidth: LABEL_JUNCTION_COMPACT_WIDTH,
+        maxLines: 1,
+      });
     }
 
-    const longestAliasLength = aliasLabels.reduce((longest, current) => {
-      return Math.max(longest, current.length);
-    }, 0);
-    const expandedWidth = clamp(
-      LABEL_JUNCTION_WIDTH + longestAliasLength * 3.1,
-      LABEL_JUNCTION_WIDTH,
-      LABEL_JUNCTION_MAX_WIDTH,
-    );
-    const visibleAliasCount = highZoomExpanded ? 6 : 4;
+    const visibleAliasCount = highZoomExpanded ? 10 : 6;
     const lines = aliasLabels.length > (visibleAliasCount + 1)
       ? [...aliasLabels.slice(0, visibleAliasCount), `+${aliasLabels.length - visibleAliasCount} more`]
       : aliasLabels;
-    const lineCount = Math.min(highZoomExpanded ? 8 : 6, lines.length);
+    return buildLabelPresentation(lines.join('\n'), {
+      minWidth: LABEL_JUNCTION_WIDTH,
+      maxWidth: LABEL_JUNCTION_MAX_WIDTH,
+      maxLines: highZoomExpanded ? 10 : 6,
+    });
+  }
 
-    return {
-      text: lines.join('\n'),
-      lines: lineCount,
-      width: highZoomExpanded ? Math.min(LABEL_JUNCTION_MAX_WIDTH, expandedWidth + 14) : expandedWidth,
-      height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
-    };
+  const trimmedLabel = slot.node.label.trim();
+  if (trimmedLabel.length === 0) {
+    return null;
   }
 
   if (!emphasized) {
-    return {
-      text: slot.node.label,
-      lines: 1,
-      width: LABEL_COMPACT_WIDTH,
-      height: LABEL_LINE_HEIGHT + LABEL_VERTICAL_PADDING * 2,
-    };
+    return buildLabelPresentation(trimmedLabel, {
+      minWidth: LABEL_MIN_WIDTH,
+      maxWidth: LABEL_COMPACT_WIDTH,
+      maxLines: 1,
+    });
   }
 
-  const width = clamp(
-    slot.node.label.length * 6 + 26,
-    72,
-    highZoomExpanded ? LABEL_BASE_WIDTH + 16 : LABEL_BASE_WIDTH + 8,
-  );
-  const maxLines = highZoomExpanded ? 4 : 3;
-  const lineCount = estimateWrappedLineCount(slot.node.label, width, maxLines);
-
-  return {
-    text: slot.node.label,
-    lines: lineCount,
-    width,
-    height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
-  };
-}
-
-function estimateWrappedLineCount(text: string, width: number, maxLines: number): number {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return 1;
-  }
-
-  const innerWidth = Math.max(24, width - 10);
-  const approxCharWidth = 4.75;
-  const charsPerLine = Math.max(6, Math.floor(innerWidth / approxCharWidth));
-  const estimated = Math.ceil(trimmed.length / charsPerLine);
-  return Math.max(1, Math.min(maxLines, estimated));
+  return buildLabelPresentation(trimmedLabel, {
+    minWidth: 74,
+    maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 28) : (LABEL_BASE_WIDTH + 12),
+    maxLines: highZoomExpanded ? 6 : 4,
+  });
 }
 
 function hasUsableLabel(slot: Slot): boolean {
@@ -1171,9 +1281,10 @@ export default function GraphCanvas() {
     }
 
     for (const slot of slots) {
+      const isExpanded = expandedLabelSlotId === slot.id;
       let emphasized = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
-        || expandedLabelSlotId === slot.id
+        || isExpanded
         || nearMaxZoom;
 
       if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
@@ -1229,7 +1340,7 @@ export default function GraphCanvas() {
         }
       }
 
-      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom);
+      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || isExpanded);
       if (label) {
         presentation.set(slot.id, label);
       }
