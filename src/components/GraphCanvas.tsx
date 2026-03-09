@@ -3816,7 +3816,7 @@ export default function GraphCanvas() {
                     <MaterialCommunityIcons name="swap-horizontal" size={TOOLS_DOCK_ICON_SIZE} color="#8ec5ff" />
                   </Animated.View>
                 </View>
-                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Swap</Text> : null}
+                {toolsHintVisible ? <Text style={[styles.toolsDockIconHint, styles.toolsDockIconHintHold]}>{'Hold to\nSwap'}</Text> : null}
               </Pressable>
               <Pressable
                 hitSlop={10}
@@ -3844,7 +3844,7 @@ export default function GraphCanvas() {
                     <MaterialCommunityIcons name="restart" size={TOOLS_DOCK_ICON_SIZE} color="#8ec5ff" />
                   </Animated.View>
                 </View>
-                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Clear</Text> : null}
+                {toolsHintVisible ? <Text style={[styles.toolsDockIconHint, styles.toolsDockIconHintHold]}>{'Hold to\nClear'}</Text> : null}
               </Pressable>
               <Pressable
                 hitSlop={10}
@@ -4590,6 +4590,13 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: '700',
     textAlign: 'center',
+  },
+  toolsDockIconHintHold: {
+    top: -27,
+    width: 58,
+    marginLeft: -29,
+    fontSize: 8.6,
+    lineHeight: 9.4,
   },
   toolsDockButtonActive: {
     backgroundColor: '#2a7af5',
