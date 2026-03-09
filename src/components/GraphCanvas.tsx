@@ -189,6 +189,7 @@ interface LabelBuildOptions {
   maxWidth: number;
   minWidth: number;
   maxLines: number;
+  widthBuffer?: number;
 }
 
 interface TapPulseState {
@@ -541,8 +542,9 @@ function buildLabelPresentation(text: string, options: LabelBuildOptions): Label
   const maxInnerWidth = Math.max(24, options.maxWidth - LABEL_HORIZONTAL_PADDING);
   const lines = wrapTextToLines(text, maxInnerWidth, options.maxLines);
   const widestLine = lines.reduce((widest, line) => Math.max(widest, estimateTextWidth(line)), 0);
+  const widthBuffer = options.widthBuffer ?? 4;
   const width = clamp(
-    Math.ceil(widestLine + LABEL_HORIZONTAL_PADDING),
+    Math.ceil(widestLine + LABEL_HORIZONTAL_PADDING + widthBuffer),
     options.minWidth,
     options.maxWidth,
   );
@@ -591,6 +593,7 @@ function getLabelPresentation(
         minWidth: Math.min(LABEL_MIN_WIDTH, LABEL_JUNCTION_COMPACT_WIDTH),
         maxWidth: LABEL_JUNCTION_COMPACT_WIDTH,
         maxLines: 1,
+        widthBuffer: 3,
       });
     }
 
@@ -602,6 +605,7 @@ function getLabelPresentation(
       minWidth: LABEL_JUNCTION_WIDTH,
       maxWidth: LABEL_JUNCTION_MAX_WIDTH,
       maxLines: highZoomExpanded ? 10 : 6,
+      widthBuffer: 8,
     });
   }
 
@@ -615,13 +619,15 @@ function getLabelPresentation(
       minWidth: LABEL_MIN_WIDTH,
       maxWidth: LABEL_COMPACT_WIDTH,
       maxLines: 1,
+      widthBuffer: 3,
     });
   }
 
   return buildLabelPresentation(trimmedLabel, {
     minWidth: 74,
-    maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 28) : (LABEL_BASE_WIDTH + 12),
+    maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 60) : (LABEL_BASE_WIDTH + 26),
     maxLines: highZoomExpanded ? 6 : 4,
+    widthBuffer: 9,
   });
 }
 
