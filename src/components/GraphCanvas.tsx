@@ -559,6 +559,28 @@ function buildLabelPresentation(text: string, options: LabelBuildOptions): Label
   };
 }
 
+function getJunctionCompactLabel(aliasLabels: string[]): string {
+  if (aliasLabels.length === 0) {
+    return '';
+  }
+
+  if (aliasLabels.length === 1) {
+    return aliasLabels[0];
+  }
+
+  // Keep 2-short-name junctions compact and readable (e.g., P1/ML).
+  if (
+    aliasLabels.length === 2
+    && aliasLabels[0].length <= 5
+    && aliasLabels[1].length <= 5
+  ) {
+    return `${aliasLabels[0]}/${aliasLabels[1]}`;
+  }
+
+  const base = aliasLabels[0].trim();
+  return `${base} +${aliasLabels.length - 1}`;
+}
+
 function getLabelPresentation(
   slot: Slot,
   editLayoutMode: boolean,
@@ -588,9 +610,7 @@ function getLabelPresentation(
     }
 
     if (!emphasized) {
-      const compact = aliasLabels.length > 1
-        ? `${aliasLabels[0]} +${aliasLabels.length - 1} more`
-        : aliasLabels[0];
+      const compact = getJunctionCompactLabel(aliasLabels);
       return buildLabelPresentation(compact, {
         minWidth: Math.min(LABEL_MIN_WIDTH, LABEL_JUNCTION_COMPACT_WIDTH),
         maxWidth: LABEL_JUNCTION_COMPACT_WIDTH,
@@ -1295,11 +1315,16 @@ export default function GraphCanvas() {
       const isInteractionTarget = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
         || isExpanded;
+      const canPromoteByMedium = (
+        mediumZoom
+        && isImportantLowZoom
+        && slot.node.type !== 'junction'
+      );
       let emphasized = (
         isInteractionTarget
         || nearMaxZoom
         || fullTextZoom
-        || (mediumZoom && isImportantLowZoom)
+        || canPromoteByMedium
       );
 
       if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
@@ -1500,6 +1525,8 @@ export default function GraphCanvas() {
       }
       if (slot.node.type === 'building') {
         priority += 20;
+      } else if (slot.node.type === 'junction') {
+        priority += 10;
       }
       if (slot.node.exitOnly) {
         priority += 5;
