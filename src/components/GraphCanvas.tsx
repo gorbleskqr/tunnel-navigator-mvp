@@ -1361,7 +1361,13 @@ export default function GraphCanvas() {
         || canPromoteByMedium
       );
 
-      if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
+      if (
+        !emphasized
+        && !lowZoom
+        && !editLayoutMode
+        && slot.node.type !== 'intersection'
+        && slot.node.type !== 'junction'
+      ) {
         const expandedLabel = getLabelPresentation(slot, editLayoutMode, true, false);
         const slotScreen = slotScreenById.get(slot.id);
 
