@@ -3805,7 +3805,7 @@ export default function GraphCanvas() {
           <View pointerEvents="none" style={styles.toolsHoldCenterOverlay}>
             <Animated.View
               style={[
-                styles.toolsHoldCenterCard,
+                styles.toolsHoldCenterVisual,
                 {
                   transform: [{ scale: activeToolHoldAction === 'swap' ? swapHoldCenterScale : clearHoldCenterScale }],
                 },
@@ -3844,7 +3844,7 @@ export default function GraphCanvas() {
                   <Animated.View
                     pointerEvents="none"
                     style={[
-                      styles.toolsHoldCenterFillClip,
+                      styles.toolsHoldCenterFillClipFromRight,
                       { width: clearHoldCenterWidth },
                     ]}
                   >
@@ -3853,7 +3853,7 @@ export default function GraphCanvas() {
                 )}
               </View>
               <Text style={styles.toolsHoldCenterText}>
-                {activeToolHoldAction === 'swap' ? 'Hold to swap · release to cancel' : 'Hold to clear · release to cancel'}
+                {activeToolHoldAction === 'swap' ? 'Hold to swap - release to cancel' : 'Hold to clear - release to cancel'}
               </Text>
             </Animated.View>
           </View>
@@ -3937,6 +3937,7 @@ export default function GraphCanvas() {
                 hitSlop={10}
                 style={({ pressed }) => [
                   styles.toolsDockIconButton,
+                  toolsPinned ? styles.toolsDockIconButtonActive : null,
                   pressed ? styles.dockButtonPressed : null,
                 ]}
                 onPress={() => {
@@ -3996,8 +3997,13 @@ export default function GraphCanvas() {
                   return !previous;
                 });
               }}
+              accessibilityLabel={toolsDockOpen ? 'Close tools' : 'Open tools'}
             >
-              <Text style={styles.toolsMainButtonText}>{toolsDockOpen ? 'Close' : 'Tools'}</Text>
+              <MaterialCommunityIcons
+                name={toolsDockOpen ? 'close' : 'tools'}
+                size={21}
+                color="#dce8fa"
+              />
             </Pressable>
           </View>
         ) : null}
@@ -4615,15 +4621,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  toolsHoldCenterCard: {
-    minWidth: 220,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#366294',
-    backgroundColor: 'rgba(10, 18, 31, 0.86)',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+  toolsHoldCenterVisual: {
     alignItems: 'center',
+    justifyContent: 'center',
   },
   toolsHoldCenterIconWrap: {
     width: TOOLS_CENTER_HOLD_WRAP_SIZE,
@@ -4638,13 +4638,13 @@ const styles = StyleSheet.create({
     borderRadius: (TOOLS_CENTER_HOLD_WRAP_SIZE + 22) / 2,
     backgroundColor: 'rgba(90, 169, 255, 0.32)',
   },
-  toolsHoldCenterFillClip: {
+  toolsHoldCenterFillClipFromRight: {
     position: 'absolute',
-    left: 0,
+    right: 0,
     top: 0,
     bottom: 0,
     overflow: 'hidden',
-    alignItems: 'flex-start',
+    alignItems: 'flex-end',
     justifyContent: 'center',
   },
   toolsHoldCenterFillClipCenter: {
@@ -4676,17 +4676,21 @@ const styles = StyleSheet.create({
   },
   toolsDockHintStrip: {
     width: TOOLS_HOLD_PROGRESS_WIDTH + 16,
-    minHeight: 34,
+    minHeight: 30,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#2c4565',
     backgroundColor: 'rgba(13, 21, 33, 0.88)',
     paddingHorizontal: 8,
-    paddingVertical: 4,
-    justifyContent: 'center',
+    paddingVertical: 3,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
     alignSelf: 'center',
   },
   toolsDockHintStripText: {
+    flexShrink: 1,
     color: '#a9bfdc',
     fontSize: 10,
     fontWeight: '700',
@@ -4695,13 +4699,11 @@ const styles = StyleSheet.create({
     color: '#d7e9ff',
   },
   toolsDockHoldTrack: {
-    marginTop: 3,
-    width: TOOLS_HOLD_PROGRESS_WIDTH,
+    width: 86,
     height: 4,
     borderRadius: 3,
     backgroundColor: '#1e2d41',
     overflow: 'hidden',
-    alignSelf: 'flex-start',
   },
   toolsDockHoldFill: {
     height: 4,
@@ -4741,6 +4743,10 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'visible',
   },
+  toolsDockIconButtonActive: {
+    borderRadius: 8,
+    backgroundColor: 'rgba(56, 96, 140, 0.55)',
+  },
   toolsDockIconWrap: {
     width: TOOLS_DOCK_ICON_WRAP_SIZE,
     height: TOOLS_DOCK_ICON_WRAP_SIZE,
@@ -4760,26 +4766,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   toolsMainButton: {
-    minWidth: 82,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderTopLeftRadius: 16,
-    borderBottomLeftRadius: 16,
-    borderTopRightRadius: 18,
-    borderBottomRightRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     backgroundColor: '#1a2537',
     borderWidth: 1,
     borderColor: '#324b6e',
+    justifyContent: 'center',
     alignItems: 'center',
   },
   toolsMainButtonActive: {
     backgroundColor: '#244f8a',
     borderColor: '#5a9dff',
-  },
-  toolsMainButtonText: {
-    color: '#dce8fa',
-    fontSize: 12,
-    fontWeight: '700',
   },
   debugPill: {
     position: 'absolute',
