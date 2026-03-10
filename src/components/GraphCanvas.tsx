@@ -82,8 +82,9 @@ const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
 const TOOLS_DOCK_ICON_SIZE = 28;
 const TOOLS_DOCK_ICON_WRAP_SIZE = 32;
 const TOOLS_HOLD_PROGRESS_WIDTH = 164;
+const TOOLS_CENTER_HOLD_ICON_SIZE = 92;
+const TOOLS_CENTER_HOLD_WRAP_SIZE = 100;
 const TOOL_ACTION_HOLD_MS = 420;
-const TOOLS_HINT_AUTO_HIDE_MS = 2200;
 const ROUTE_INFO_AUTO_HIDE_MS = 2600;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
@@ -729,8 +730,6 @@ export default function GraphCanvas() {
   const [screenTapPulse, setScreenTapPulse] = useState<TapPulseState | null>(null);
   const [toolsDockOpen, setToolsDockOpen] = useState(false);
   const [toolsPinned, setToolsPinned] = useState(false);
-  const [toolsHintVisible, setToolsHintVisible] = useState(false);
-  const [toolsHintPinned, setToolsHintPinned] = useState(false);
   const [activeToolHoldAction, setActiveToolHoldAction] = useState<HoldToolAction | null>(null);
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
   const [routeInfoPinned, setRouteInfoPinned] = useState(false);
@@ -776,7 +775,6 @@ export default function GraphCanvas() {
   const labelHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const toolsHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeToolHoldActionRef = useRef<HoldToolAction | null>(null);
   const routeInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -988,13 +986,6 @@ export default function GraphCanvas() {
     if (endpointHoldTimerRef.current) {
       clearTimeout(endpointHoldTimerRef.current);
       endpointHoldTimerRef.current = null;
-    }
-  };
-
-  const clearToolsHintTimer = (): void => {
-    if (toolsHintTimerRef.current) {
-      clearTimeout(toolsHintTimerRef.current);
-      toolsHintTimerRef.current = null;
     }
   };
 
@@ -2040,9 +2031,6 @@ export default function GraphCanvas() {
       if (deletePromptTimerRef.current) {
         clearTimeout(deletePromptTimerRef.current);
       }
-      if (toolsHintTimerRef.current) {
-        clearTimeout(toolsHintTimerRef.current);
-      }
       if (toolHoldTimerRef.current) {
         clearTimeout(toolHoldTimerRef.current);
       }
@@ -2074,18 +2062,8 @@ export default function GraphCanvas() {
   useEffect(() => {
     if (!toolsDockOpen) {
       cancelToolHold();
-      if (!toolsHintPinned) {
-        setToolsHintVisible(false);
-      }
-      clearToolsHintTimer();
-      return;
     }
-
-    setToolsHintVisible(true);
-    if (!toolsHintPinned) {
-      setToolsHintAutoHide();
-    }
-  }, [toolsDockOpen, toolsHintPinned]);
+  }, [toolsDockOpen]);
 
   useEffect(() => {
     if (!routeInfoOpen || routeInfoPinned) {
@@ -2795,32 +2773,6 @@ export default function GraphCanvas() {
     cancelToolHold();
   };
 
-  const setToolsHintAutoHide = (): void => {
-    if (toolsHintPinned || !toolsDockOpen) {
-      return;
-    }
-
-    clearToolsHintTimer();
-    toolsHintTimerRef.current = setTimeout(() => {
-      setToolsHintVisible(false);
-      toolsHintTimerRef.current = null;
-    }, TOOLS_HINT_AUTO_HIDE_MS);
-  };
-
-  const toggleToolsHint = (): void => {
-    const nextPinned = !toolsHintPinned;
-    setToolsHintPinned(nextPinned);
-    setToolsHintVisible(true);
-
-    if (nextPinned) {
-      clearToolsHintTimer();
-    } else {
-      setToolsHintAutoHide();
-    }
-
-    triggerHaptic('light');
-  };
-
   const endpointIndicators = useMemo<EndpointIndicator[]>(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
       return [];
@@ -2945,14 +2897,35 @@ export default function GraphCanvas() {
     inputRange: [0, 1],
     outputRange: [0, TOOLS_HOLD_PROGRESS_WIDTH],
   });
+  const swapHoldCenterInset = swapHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [TOOLS_CENTER_HOLD_WRAP_SIZE / 2, 0],
+  });
+  const clearHoldCenterWidth = clearHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, TOOLS_CENTER_HOLD_WRAP_SIZE],
+  });
+  const swapHoldCenterScale = swapHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.94, 1.08],
+  });
+  const clearHoldCenterScale = clearHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.94, 1.08],
+  });
+  const swapHoldCenterGlowOpacity = swapHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.22, 0.6],
+  });
+  const clearHoldCenterGlowOpacity = clearHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.22, 0.6],
+  });
   const toolsHoldHintText = activeToolHoldAction === 'swap'
     ? 'Holding to swap endpoints'
     : activeToolHoldAction === 'clear'
       ? 'Holding to clear endpoints'
-      : toolsHintVisible
-        ? 'Hold swap/clear to confirm'
-        : 'Hold swap/clear to confirm';
-  const toolsHintStripVisible = toolsHintVisible || activeToolHoldAction !== null;
+      : 'Hold swap/clear to confirm';
   const toolsDockTranslateX = toolsDockAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [18, 0],
@@ -3828,6 +3801,64 @@ export default function GraphCanvas() {
           </View>
         ) : null}
 
+        {activeToolHoldAction ? (
+          <View pointerEvents="none" style={styles.toolsHoldCenterOverlay}>
+            <Animated.View
+              style={[
+                styles.toolsHoldCenterCard,
+                {
+                  transform: [{ scale: activeToolHoldAction === 'swap' ? swapHoldCenterScale : clearHoldCenterScale }],
+                },
+              ]}
+            >
+              <View style={styles.toolsHoldCenterIconWrap}>
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    styles.toolsHoldCenterGlow,
+                    {
+                      opacity: activeToolHoldAction === 'swap' ? swapHoldCenterGlowOpacity : clearHoldCenterGlowOpacity,
+                      transform: [{ scale: activeToolHoldAction === 'swap' ? swapHoldCenterScale : clearHoldCenterScale }],
+                    },
+                  ]}
+                />
+                <MaterialCommunityIcons
+                  name={activeToolHoldAction === 'swap' ? 'swap-horizontal-bold' : 'restart'}
+                  size={TOOLS_CENTER_HOLD_ICON_SIZE}
+                  color="#36516f"
+                />
+                {activeToolHoldAction === 'swap' ? (
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      styles.toolsHoldCenterFillClipCenter,
+                      {
+                        left: swapHoldCenterInset,
+                        right: swapHoldCenterInset,
+                      },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="swap-horizontal-bold" size={TOOLS_CENTER_HOLD_ICON_SIZE} color="#86c8ff" />
+                  </Animated.View>
+                ) : (
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      styles.toolsHoldCenterFillClip,
+                      { width: clearHoldCenterWidth },
+                    ]}
+                  >
+                    <MaterialCommunityIcons name="restart" size={TOOLS_CENTER_HOLD_ICON_SIZE} color="#86c8ff" />
+                  </Animated.View>
+                )}
+              </View>
+              <Text style={styles.toolsHoldCenterText}>
+                {activeToolHoldAction === 'swap' ? 'Hold to swap · release to cancel' : 'Hold to clear · release to cancel'}
+              </Text>
+            </Animated.View>
+          </View>
+        ) : null}
+
         {!draggingEndpoint ? (
           <View style={[styles.toolsDock, { bottom: 10 + bottomInset }]}>
             <Animated.View
@@ -3845,10 +3876,9 @@ export default function GraphCanvas() {
                   style={[
                     styles.toolsDockHintStripText,
                     activeToolHoldAction ? styles.toolsDockHintStripTextActive : null,
-                    !toolsHintStripVisible && !activeToolHoldAction ? styles.toolsDockHintStripTextHidden : null,
                   ]}
                 >
-                  {toolsHintStripVisible || activeToolHoldAction ? toolsHoldHintText : ' '}
+                  {toolsHoldHintText}
                 </Text>
                 <View style={styles.toolsDockHoldTrack}>
                   <Animated.View
@@ -3902,21 +3932,6 @@ export default function GraphCanvas() {
                     color={activeToolHoldAction === 'clear' ? '#8ec5ff' : '#dce8fa'}
                   />
                 </View>
-              </Pressable>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [
-                  styles.toolsDockIconButton,
-                  pressed ? styles.dockButtonPressed : null,
-                ]}
-                onPress={toggleToolsHint}
-                accessibilityLabel={toolsHintPinned ? 'Hide tool icon hints' : 'Show tool icon hints'}
-              >
-                <MaterialCommunityIcons
-                  name={toolsHintPinned ? 'tooltip-text' : 'tooltip-text-outline'}
-                  size={TOOLS_DOCK_ICON_SIZE}
-                  color={toolsHintPinned ? '#8ec5ff' : '#dce8fa'}
-                />
               </Pressable>
               <Pressable
                 hitSlop={10}
@@ -4591,6 +4606,61 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
+  toolsHoldCenterOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  toolsHoldCenterCard: {
+    minWidth: 220,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#366294',
+    backgroundColor: 'rgba(10, 18, 31, 0.86)',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  toolsHoldCenterIconWrap: {
+    width: TOOLS_CENTER_HOLD_WRAP_SIZE,
+    height: TOOLS_CENTER_HOLD_WRAP_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsHoldCenterGlow: {
+    position: 'absolute',
+    width: TOOLS_CENTER_HOLD_WRAP_SIZE + 22,
+    height: TOOLS_CENTER_HOLD_WRAP_SIZE + 22,
+    borderRadius: (TOOLS_CENTER_HOLD_WRAP_SIZE + 22) / 2,
+    backgroundColor: 'rgba(90, 169, 255, 0.32)',
+  },
+  toolsHoldCenterFillClip: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+  },
+  toolsHoldCenterFillClipCenter: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsHoldCenterText: {
+    marginTop: 4,
+    color: '#d8e8ff',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   toolsDockTray: {
     marginRight: 8,
     maxWidth: '78%',
@@ -4623,9 +4693,6 @@ const styles = StyleSheet.create({
   },
   toolsDockHintStripTextActive: {
     color: '#d7e9ff',
-  },
-  toolsDockHintStripTextHidden: {
-    opacity: 0,
   },
   toolsDockHoldTrack: {
     marginTop: 3,
