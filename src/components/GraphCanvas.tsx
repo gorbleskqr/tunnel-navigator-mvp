@@ -81,7 +81,7 @@ const LABEL_ROUTE_OCCLUSION_BUFFER = 8;
 const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
 const TOOLS_DOCK_ICON_SIZE = 28;
 const TOOLS_DOCK_ICON_WRAP_SIZE = 32;
-const TOOLS_DOCK_ICON_HALF_WRAP = TOOLS_DOCK_ICON_WRAP_SIZE / 2;
+const TOOLS_HOLD_PROGRESS_WIDTH = 164;
 const TOOL_ACTION_HOLD_MS = 420;
 const TOOLS_HINT_AUTO_HIDE_MS = 2200;
 const ROUTE_INFO_AUTO_HIDE_MS = 2600;
@@ -2937,14 +2937,22 @@ export default function GraphCanvas() {
   }, [endpoints, slotById, viewport, viewportSize.height, viewportSize.width]);
 
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
-  const swapHoldInset = swapHoldAnim.interpolate({
+  const swapHoldProgressWidth = swapHoldAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [TOOLS_DOCK_ICON_HALF_WRAP, 0],
+    outputRange: [0, TOOLS_HOLD_PROGRESS_WIDTH],
   });
-  const clearHoldFillWidth = clearHoldAnim.interpolate({
+  const clearHoldProgressWidth = clearHoldAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [0, TOOLS_DOCK_ICON_WRAP_SIZE],
+    outputRange: [0, TOOLS_HOLD_PROGRESS_WIDTH],
   });
+  const toolsHoldHintText = activeToolHoldAction === 'swap'
+    ? 'Holding to swap endpoints'
+    : activeToolHoldAction === 'clear'
+      ? 'Holding to clear endpoints'
+      : toolsHintVisible
+        ? 'Swap/Clear: hold to confirm. Pin keeps tools open.'
+        : 'Hold swap/clear to confirm';
+  const toolsHintStripVisible = toolsHintVisible || activeToolHoldAction !== null;
   const toolsDockTranslateX = toolsDockAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [18, 0],
@@ -3832,6 +3840,31 @@ export default function GraphCanvas() {
                 },
               ]}
             >
+              <View style={styles.toolsDockHintStrip}>
+                <Text
+                  style={[
+                    styles.toolsDockHintStripText,
+                    activeToolHoldAction ? styles.toolsDockHintStripTextActive : null,
+                    !toolsHintStripVisible && !activeToolHoldAction ? styles.toolsDockHintStripTextHidden : null,
+                  ]}
+                >
+                  {toolsHintStripVisible || activeToolHoldAction ? toolsHoldHintText : ' '}
+                </Text>
+                <View style={styles.toolsDockHoldTrack}>
+                  <Animated.View
+                    pointerEvents="none"
+                    style={[
+                      styles.toolsDockHoldFill,
+                      activeToolHoldAction === 'swap'
+                        ? { width: swapHoldProgressWidth }
+                        : activeToolHoldAction === 'clear'
+                          ? { width: clearHoldProgressWidth }
+                          : styles.toolsDockHoldFillHidden,
+                    ]}
+                  />
+                </View>
+              </View>
+              <View style={styles.toolsDockActionsRow}>
               <Pressable
                 hitSlop={10}
                 style={({ pressed }) => [
@@ -3850,20 +3883,7 @@ export default function GraphCanvas() {
                     size={TOOLS_DOCK_ICON_SIZE}
                     color={endpoints.length !== 2 ? '#7489a8' : (activeToolHoldAction === 'swap' ? '#8ec5ff' : '#dce8fa')}
                   />
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[
-                      styles.toolsDockIconFillClipCenter,
-                      {
-                        left: swapHoldInset,
-                        right: swapHoldInset,
-                      },
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="swap-horizontal" size={TOOLS_DOCK_ICON_SIZE} color="#8ec5ff" />
-                  </Animated.View>
                 </View>
-                {toolsHintVisible ? <Text style={[styles.toolsDockIconHint, styles.toolsDockIconHintHold]}>{'Hold to\nSwap'}</Text> : null}
               </Pressable>
               <Pressable
                 hitSlop={10}
@@ -3881,17 +3901,7 @@ export default function GraphCanvas() {
                     size={TOOLS_DOCK_ICON_SIZE}
                     color={activeToolHoldAction === 'clear' ? '#8ec5ff' : '#dce8fa'}
                   />
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[
-                      styles.toolsDockIconFillClip,
-                      { width: clearHoldFillWidth },
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="restart" size={TOOLS_DOCK_ICON_SIZE} color="#8ec5ff" />
-                  </Animated.View>
                 </View>
-                {toolsHintVisible ? <Text style={[styles.toolsDockIconHint, styles.toolsDockIconHintHold]}>{'Hold to\nClear'}</Text> : null}
               </Pressable>
               <Pressable
                 hitSlop={10}
@@ -3907,7 +3917,6 @@ export default function GraphCanvas() {
                   size={TOOLS_DOCK_ICON_SIZE}
                   color={toolsHintPinned ? '#8ec5ff' : '#dce8fa'}
                 />
-                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Hints</Text> : null}
               </Pressable>
               <Pressable
                 hitSlop={10}
@@ -3926,7 +3935,6 @@ export default function GraphCanvas() {
                   size={TOOLS_DOCK_ICON_SIZE}
                   color={toolsPinned ? '#8ec5ff' : '#dce8fa'}
                 />
-                {toolsHintVisible ? <Text style={styles.toolsDockIconHint}>Pin</Text> : null}
               </Pressable>
               {EDIT_LAYOUT_ENABLED ? (
                 <Pressable
@@ -3959,6 +3967,7 @@ export default function GraphCanvas() {
                   </Pressable>
                 </>
               ) : null}
+              </View>
             </Animated.View>
             <Pressable
               hitSlop={12}
@@ -4585,16 +4594,60 @@ const styles = StyleSheet.create({
   toolsDockTray: {
     marginRight: 8,
     maxWidth: '78%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 6,
     backgroundColor: 'rgba(16, 26, 38, 0.96)',
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#355176',
     paddingHorizontal: 8,
     paddingVertical: 7,
+  },
+  toolsDockHintStrip: {
+    minHeight: 34,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2c4565',
+    backgroundColor: 'rgba(13, 21, 33, 0.88)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    justifyContent: 'center',
+  },
+  toolsDockHintStripText: {
+    color: '#a9bfdc',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  toolsDockHintStripTextActive: {
+    color: '#d7e9ff',
+  },
+  toolsDockHintStripTextHidden: {
+    opacity: 0,
+  },
+  toolsDockHoldTrack: {
+    marginTop: 3,
+    width: TOOLS_HOLD_PROGRESS_WIDTH,
+    height: 4,
+    borderRadius: 3,
+    backgroundColor: '#1e2d41',
+    overflow: 'hidden',
+    alignSelf: 'flex-start',
+  },
+  toolsDockHoldFill: {
+    height: 4,
+    borderRadius: 3,
+    backgroundColor: '#68b1ff',
+  },
+  toolsDockHoldFillHidden: {
+    width: 0,
+    opacity: 0,
+  },
+  toolsDockActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   toolsDockButton: {
     paddingHorizontal: 10,
@@ -4622,41 +4675,6 @@ const styles = StyleSheet.create({
     height: TOOLS_DOCK_ICON_WRAP_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  toolsDockIconFillClip: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    overflow: 'hidden',
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-  },
-  toolsDockIconFillClipCenter: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toolsDockIconHint: {
-    position: 'absolute',
-    top: -16,
-    left: '50%',
-    width: 40,
-    marginLeft: -20,
-    color: '#a7bddc',
-    fontSize: 9,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  toolsDockIconHintHold: {
-    top: -27,
-    width: 58,
-    marginLeft: -29,
-    fontSize: 8.6,
-    lineHeight: 9.4,
   },
   toolsDockButtonActive: {
     backgroundColor: '#2a7af5',
