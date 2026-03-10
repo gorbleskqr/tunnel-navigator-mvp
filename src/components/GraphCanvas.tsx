@@ -2101,6 +2101,12 @@ export default function GraphCanvas() {
   }, [routeInfoOpen, routeInfoPinned]);
 
   useEffect(() => {
+    if (!routeInfoOpen && routeInfoPinned) {
+      setRouteInfoPinned(false);
+    }
+  }, [routeInfoOpen, routeInfoPinned]);
+
+  useEffect(() => {
     if (routes.length === 0) {
       routeGlow.setValue(0);
       return;
