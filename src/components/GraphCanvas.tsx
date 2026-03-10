@@ -84,6 +84,7 @@ const TOOLS_DOCK_ICON_WRAP_SIZE = 32;
 const TOOLS_DOCK_ICON_HALF_WRAP = TOOLS_DOCK_ICON_WRAP_SIZE / 2;
 const TOOL_ACTION_HOLD_MS = 420;
 const TOOLS_HINT_AUTO_HIDE_MS = 2200;
+const ROUTE_INFO_AUTO_HIDE_MS = 2600;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
 const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
@@ -732,6 +733,7 @@ export default function GraphCanvas() {
   const [toolsHintPinned, setToolsHintPinned] = useState(false);
   const [activeToolHoldAction, setActiveToolHoldAction] = useState<HoldToolAction | null>(null);
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
+  const [routeInfoPinned, setRouteInfoPinned] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>('route');
   const [expandedLabelSlotId, setExpandedLabelSlotId] = useState<string | null>(null);
   const [expandedLabelAnchor, setExpandedLabelAnchor] = useState<ExpandedLabelAnchor | null>(null);
@@ -777,6 +779,7 @@ export default function GraphCanvas() {
   const toolsHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeToolHoldActionRef = useRef<HoldToolAction | null>(null);
+  const routeInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   slotsRef.current = slots;
   endpointsRef.current = endpoints;
@@ -992,6 +995,13 @@ export default function GraphCanvas() {
     if (toolsHintTimerRef.current) {
       clearTimeout(toolsHintTimerRef.current);
       toolsHintTimerRef.current = null;
+    }
+  };
+
+  const clearRouteInfoAutoHideTimer = (): void => {
+    if (routeInfoTimerRef.current) {
+      clearTimeout(routeInfoTimerRef.current);
+      routeInfoTimerRef.current = null;
     }
   };
 
@@ -2036,6 +2046,9 @@ export default function GraphCanvas() {
       if (toolHoldTimerRef.current) {
         clearTimeout(toolHoldTimerRef.current);
       }
+      if (routeInfoTimerRef.current) {
+        clearTimeout(routeInfoTimerRef.current);
+      }
     };
   }, []);
 
@@ -2073,6 +2086,19 @@ export default function GraphCanvas() {
       setToolsHintAutoHide();
     }
   }, [toolsDockOpen, toolsHintPinned]);
+
+  useEffect(() => {
+    if (!routeInfoOpen || routeInfoPinned) {
+      clearRouteInfoAutoHideTimer();
+      return;
+    }
+
+    clearRouteInfoAutoHideTimer();
+    routeInfoTimerRef.current = setTimeout(() => {
+      setRouteInfoOpen(false);
+      routeInfoTimerRef.current = null;
+    }, ROUTE_INFO_AUTO_HIDE_MS);
+  }, [routeInfoOpen, routeInfoPinned]);
 
   useEffect(() => {
     if (routes.length === 0) {
@@ -3695,6 +3721,21 @@ export default function GraphCanvas() {
               >
                 <Text style={[styles.infoTabText, infoTab === 'legend' ? styles.infoTabTextActive : null]}>Legend</Text>
               </Pressable>
+              <Pressable
+                hitSlop={8}
+                style={[styles.infoPinButton, routeInfoPinned ? styles.infoPinButtonActive : null]}
+                onPress={() => {
+                  setRouteInfoPinned((previous) => !previous);
+                  triggerHaptic('light');
+                }}
+                accessibilityLabel={routeInfoPinned ? 'Info menu pinned' : 'Info menu auto-retract'}
+              >
+                <MaterialCommunityIcons
+                  name={routeInfoPinned ? 'pin' : 'pin-outline'}
+                  size={15}
+                  color={routeInfoPinned ? '#eef6ff' : '#c7d8ef'}
+                />
+              </Pressable>
             </View>
 
             {infoTab === 'route' ? (
@@ -4462,6 +4503,19 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   infoTabButtonActive: {
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
+  },
+  infoPinButton: {
+    width: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoPinButtonActive: {
     backgroundColor: '#2a7af5',
     borderColor: '#5d9bff',
   },
