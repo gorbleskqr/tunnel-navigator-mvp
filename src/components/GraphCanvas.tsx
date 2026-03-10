@@ -82,9 +82,9 @@ const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
 const TOOLS_DOCK_ICON_SIZE = 28;
 const TOOLS_DOCK_ICON_WRAP_SIZE = 32;
 const TOOLS_HOLD_PROGRESS_WIDTH = 164;
-const TOOLS_CENTER_HOLD_ICON_SIZE = 92;
-const TOOLS_CENTER_HOLD_WRAP_SIZE = 100;
-const TOOL_ACTION_HOLD_MS = 420;
+const TOOLS_CENTER_HOLD_ICON_SIZE = 104;
+const TOOLS_CENTER_HOLD_WRAP_SIZE = 112;
+const TOOL_ACTION_HOLD_MS = 820;
 const ROUTE_INFO_AUTO_HIDE_MS = 2600;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
@@ -2742,7 +2742,7 @@ export default function GraphCanvas() {
     Animated.timing(anim, {
       toValue: 1,
       duration: TOOL_ACTION_HOLD_MS,
-      easing: Easing.out(Easing.quad),
+      easing: Easing.linear,
       useNativeDriver: false,
     }).start();
 
@@ -2905,27 +2905,11 @@ export default function GraphCanvas() {
     inputRange: [0, 1],
     outputRange: [0, TOOLS_CENTER_HOLD_WRAP_SIZE],
   });
-  const swapHoldCenterScale = swapHoldAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.94, 1.08],
-  });
-  const clearHoldCenterScale = clearHoldAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.94, 1.08],
-  });
-  const swapHoldCenterGlowOpacity = swapHoldAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.22, 0.6],
-  });
-  const clearHoldCenterGlowOpacity = clearHoldAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.22, 0.6],
-  });
   const toolsHoldHintText = activeToolHoldAction === 'swap'
-    ? 'Holding to swap endpoints'
+    ? 'Hold to swap'
     : activeToolHoldAction === 'clear'
-      ? 'Holding to clear endpoints'
-      : 'Hold swap/clear to confirm';
+      ? 'Hold to clear'
+      : 'Hold to confirm';
   const toolsDockTranslateX = toolsDockAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [18, 0],
@@ -3803,25 +3787,8 @@ export default function GraphCanvas() {
 
         {activeToolHoldAction ? (
           <View pointerEvents="none" style={styles.toolsHoldCenterOverlay}>
-            <Animated.View
-              style={[
-                styles.toolsHoldCenterVisual,
-                {
-                  transform: [{ scale: activeToolHoldAction === 'swap' ? swapHoldCenterScale : clearHoldCenterScale }],
-                },
-              ]}
-            >
+            <View style={styles.toolsHoldCenterVisual}>
               <View style={styles.toolsHoldCenterIconWrap}>
-                <Animated.View
-                  pointerEvents="none"
-                  style={[
-                    styles.toolsHoldCenterGlow,
-                    {
-                      opacity: activeToolHoldAction === 'swap' ? swapHoldCenterGlowOpacity : clearHoldCenterGlowOpacity,
-                      transform: [{ scale: activeToolHoldAction === 'swap' ? swapHoldCenterScale : clearHoldCenterScale }],
-                    },
-                  ]}
-                />
                 <MaterialCommunityIcons
                   name={activeToolHoldAction === 'swap' ? 'swap-horizontal-bold' : 'restart'}
                   size={TOOLS_CENTER_HOLD_ICON_SIZE}
@@ -3852,10 +3819,7 @@ export default function GraphCanvas() {
                   </Animated.View>
                 )}
               </View>
-              <Text style={styles.toolsHoldCenterText}>
-                {activeToolHoldAction === 'swap' ? 'Hold to swap - release to cancel' : 'Hold to clear - release to cancel'}
-              </Text>
-            </Animated.View>
+            </View>
           </View>
         ) : null}
 
@@ -3873,6 +3837,8 @@ export default function GraphCanvas() {
             >
               <View style={styles.toolsDockHintStrip}>
                 <Text
+                  numberOfLines={1}
+                  ellipsizeMode="clip"
                   style={[
                     styles.toolsDockHintStripText,
                     activeToolHoldAction ? styles.toolsDockHintStripTextActive : null,
@@ -4631,13 +4597,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toolsHoldCenterGlow: {
-    position: 'absolute',
-    width: TOOLS_CENTER_HOLD_WRAP_SIZE + 22,
-    height: TOOLS_CENTER_HOLD_WRAP_SIZE + 22,
-    borderRadius: (TOOLS_CENTER_HOLD_WRAP_SIZE + 22) / 2,
-    backgroundColor: 'rgba(90, 169, 255, 0.32)',
-  },
   toolsHoldCenterFillClipFromRight: {
     position: 'absolute',
     right: 0,
@@ -4655,12 +4614,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  toolsHoldCenterText: {
-    marginTop: 4,
-    color: '#d8e8ff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
   toolsDockTray: {
     marginRight: 8,
     maxWidth: '78%',
@@ -4676,7 +4629,7 @@ const styles = StyleSheet.create({
   },
   toolsDockHintStrip: {
     width: TOOLS_HOLD_PROGRESS_WIDTH + 16,
-    minHeight: 30,
+    minHeight: 28,
     borderRadius: 10,
     borderWidth: 1,
     borderColor: '#2c4565',
@@ -4691,6 +4644,7 @@ const styles = StyleSheet.create({
   },
   toolsDockHintStripText: {
     flexShrink: 1,
+    marginRight: 6,
     color: '#a9bfdc',
     fontSize: 10,
     fontWeight: '700',
@@ -4700,13 +4654,15 @@ const styles = StyleSheet.create({
   },
   toolsDockHoldTrack: {
     width: 86,
-    height: 4,
+    height: 5,
     borderRadius: 3,
-    backgroundColor: '#1e2d41',
+    borderWidth: 1,
+    borderColor: '#355272',
+    backgroundColor: '#18283a',
     overflow: 'hidden',
   },
   toolsDockHoldFill: {
-    height: 4,
+    height: 5,
     borderRadius: 3,
     backgroundColor: '#68b1ff',
   },
