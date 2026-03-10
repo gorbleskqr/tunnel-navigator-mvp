@@ -85,6 +85,7 @@ const TOOLS_HOLD_PROGRESS_WIDTH = 164;
 const TOOLS_CENTER_HOLD_ICON_SIZE = 104;
 const TOOLS_CENTER_HOLD_WRAP_SIZE = 112;
 const TOOL_ACTION_HOLD_MS = 820;
+const TOOLS_DOCK_AUTO_HIDE_MS = 2200;
 const ROUTE_INFO_AUTO_HIDE_MS = 2600;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
@@ -776,6 +777,7 @@ export default function GraphCanvas() {
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toolsAutoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeToolHoldActionRef = useRef<HoldToolAction | null>(null);
   const routeInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1004,6 +1006,13 @@ export default function GraphCanvas() {
     if (toolHoldTimerRef.current) {
       clearTimeout(toolHoldTimerRef.current);
       toolHoldTimerRef.current = null;
+    }
+  };
+
+  const clearToolsAutoHideTimer = (): void => {
+    if (toolsAutoHideTimerRef.current) {
+      clearTimeout(toolsAutoHideTimerRef.current);
+      toolsAutoHideTimerRef.current = null;
     }
   };
 
@@ -2034,6 +2043,9 @@ export default function GraphCanvas() {
       if (toolHoldTimerRef.current) {
         clearTimeout(toolHoldTimerRef.current);
       }
+      if (toolsAutoHideTimerRef.current) {
+        clearTimeout(toolsAutoHideTimerRef.current);
+      }
       if (routeInfoTimerRef.current) {
         clearTimeout(routeInfoTimerRef.current);
       }
@@ -2064,6 +2076,23 @@ export default function GraphCanvas() {
       cancelToolHold();
     }
   }, [toolsDockOpen]);
+
+  useEffect(() => {
+    if (!toolsDockOpen || toolsPinned || activeToolHoldAction) {
+      clearToolsAutoHideTimer();
+      return;
+    }
+
+    clearToolsAutoHideTimer();
+    toolsAutoHideTimerRef.current = setTimeout(() => {
+      setToolsDockOpen(false);
+      toolsAutoHideTimerRef.current = null;
+    }, TOOLS_DOCK_AUTO_HIDE_MS);
+
+    return () => {
+      clearToolsAutoHideTimer();
+    };
+  }, [activeToolHoldAction, toolsDockOpen, toolsPinned]);
 
   useEffect(() => {
     if (!routeInfoOpen || routeInfoPinned) {
@@ -3785,44 +3814,6 @@ export default function GraphCanvas() {
           </View>
         ) : null}
 
-        {activeToolHoldAction ? (
-          <View pointerEvents="none" style={styles.toolsHoldCenterOverlay}>
-            <View style={styles.toolsHoldCenterVisual}>
-              <View style={styles.toolsHoldCenterIconWrap}>
-                <MaterialCommunityIcons
-                  name={activeToolHoldAction === 'swap' ? 'swap-horizontal-bold' : 'restart'}
-                  size={TOOLS_CENTER_HOLD_ICON_SIZE}
-                  color="#36516f"
-                />
-                {activeToolHoldAction === 'swap' ? (
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[
-                      styles.toolsHoldCenterFillClipCenter,
-                      {
-                        left: swapHoldCenterInset,
-                        right: swapHoldCenterInset,
-                      },
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="swap-horizontal-bold" size={TOOLS_CENTER_HOLD_ICON_SIZE} color="#86c8ff" />
-                  </Animated.View>
-                ) : (
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[
-                      styles.toolsHoldCenterFillClipFromRight,
-                      { width: clearHoldCenterWidth },
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="restart" size={TOOLS_CENTER_HOLD_ICON_SIZE} color="#86c8ff" />
-                  </Animated.View>
-                )}
-              </View>
-            </View>
-          </View>
-        ) : null}
-
         {!draggingEndpoint ? (
           <View style={[styles.toolsDock, { bottom: 10 + bottomInset }]}>
             <Animated.View
@@ -3835,121 +3826,94 @@ export default function GraphCanvas() {
                 },
               ]}
             >
-              <View style={styles.toolsDockHintStrip}>
-                <Text
-                  numberOfLines={1}
-                  ellipsizeMode="clip"
-                  style={[
-                    styles.toolsDockHintStripText,
-                    activeToolHoldAction ? styles.toolsDockHintStripTextActive : null,
-                  ]}
-                >
-                  {toolsHoldHintText}
-                </Text>
-                <View style={styles.toolsDockHoldTrack}>
-                  <Animated.View
-                    pointerEvents="none"
-                    style={[
-                      styles.toolsDockHoldFill,
-                      activeToolHoldAction === 'swap'
-                        ? { width: swapHoldProgressWidth }
-                        : activeToolHoldAction === 'clear'
-                          ? { width: clearHoldProgressWidth }
-                          : styles.toolsDockHoldFillHidden,
-                    ]}
-                  />
-                </View>
-              </View>
               <View style={styles.toolsDockActionsRow}>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [
-                  styles.toolsDockIconButton,
-                  endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
-                  pressed ? styles.dockButtonPressed : null,
-                ]}
-                disabled={endpoints.length !== 2}
-                onPressIn={() => startToolHold('swap', swapEndpoints)}
-                onPressOut={() => releaseToolHold('swap')}
-                accessibilityLabel="Hold to swap endpoints"
-              >
-                <View style={styles.toolsDockIconWrap}>
-                  <MaterialCommunityIcons
-                    name="swap-horizontal"
-                    size={TOOLS_DOCK_ICON_SIZE}
-                    color={endpoints.length !== 2 ? '#7489a8' : (activeToolHoldAction === 'swap' ? '#8ec5ff' : '#dce8fa')}
-                  />
-                </View>
-              </Pressable>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [
-                  styles.toolsDockIconButton,
-                  pressed ? styles.dockButtonPressed : null,
-                ]}
-                onPressIn={() => startToolHold('clear', clearEndpoints)}
-                onPressOut={() => releaseToolHold('clear')}
-                accessibilityLabel="Hold to clear endpoints"
-              >
-                <View style={styles.toolsDockIconWrap}>
-                  <MaterialCommunityIcons
-                    name="restart"
-                    size={TOOLS_DOCK_ICON_SIZE}
-                    color={activeToolHoldAction === 'clear' ? '#8ec5ff' : '#dce8fa'}
-                  />
-                </View>
-              </Pressable>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [
-                  styles.toolsDockIconButton,
-                  toolsPinned ? styles.toolsDockIconButtonActive : null,
-                  pressed ? styles.dockButtonPressed : null,
-                ]}
-                onPress={() => {
-                  setToolsPinned((previous) => !previous);
-                  triggerHaptic('light');
-                }}
-                accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
-              >
-                <MaterialCommunityIcons
-                  name={toolsPinned ? 'pin' : 'pin-outline'}
-                  size={TOOLS_DOCK_ICON_SIZE}
-                  color={toolsPinned ? '#8ec5ff' : '#dce8fa'}
-                />
-              </Pressable>
-              {EDIT_LAYOUT_ENABLED ? (
                 <Pressable
                   hitSlop={10}
                   style={({ pressed }) => [
-                    styles.toolsDockButton,
-                    editLayoutMode ? styles.toolsDockButtonActive : null,
+                    styles.toolsDockIconButton,
+                    endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
                     pressed ? styles.dockButtonPressed : null,
                   ]}
-                  onPress={() => runToolAction(() => setEditLayoutMode((previous) => !previous))}
+                  disabled={endpoints.length !== 2}
+                  onPress={() => runToolAction(swapEndpoints)}
+                  accessibilityLabel="Swap endpoints"
                 >
-                  <Text style={styles.toolsDockButtonText}>{editLayoutMode ? 'Done' : 'Edit'}</Text>
+                  <MaterialCommunityIcons
+                    name="swap-horizontal"
+                    size={19}
+                    color={endpoints.length !== 2 ? '#8ea5c6' : '#cfe0f8'}
+                  />
                 </Pressable>
-              ) : null}
-              {EDIT_LAYOUT_ENABLED && editLayoutMode ? (
-                <>
-                  <Pressable
-                    hitSlop={10}
-                    style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                    onPress={() => runToolAction(() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length))}
-                  >
-                    <Text style={styles.toolsDockButtonText}>Grid {gridSize}</Text>
-                  </Pressable>
-                  <Pressable
-                    hitSlop={10}
-                    style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                    onPress={() => runToolAction(() => setExportVisible(true))}
-                  >
-                    <Text style={styles.toolsDockButtonText}>Export</Text>
-                  </Pressable>
-                </>
-              ) : null}
+                <Pressable
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.toolsDockIconButton,
+                    endpoints.length === 0 ? styles.toolsDockButtonDisabled : null,
+                    pressed ? styles.dockButtonPressed : null,
+                  ]}
+                  disabled={endpoints.length === 0}
+                  onPress={() => runToolAction(clearEndpoints)}
+                  accessibilityLabel="Clear endpoints"
+                >
+                  <MaterialCommunityIcons
+                    name="restart"
+                    size={19}
+                    color={endpoints.length === 0 ? '#8ea5c6' : '#cfe0f8'}
+                  />
+                </Pressable>
+                <Pressable
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.toolsDockIconButton,
+                    toolsPinned ? styles.toolsDockIconButtonActive : null,
+                    pressed ? styles.dockButtonPressed : null,
+                  ]}
+                  onPress={() => {
+                    setToolsPinned((previous) => !previous);
+                    triggerHaptic('light');
+                  }}
+                  accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
+                >
+                  <MaterialCommunityIcons
+                    name={toolsPinned ? 'pin' : 'pin-outline'}
+                    size={16}
+                    color={toolsPinned ? '#eef6ff' : '#c7d8ef'}
+                  />
+                </Pressable>
               </View>
+              {EDIT_LAYOUT_ENABLED ? (
+                <View style={styles.toolsDockActionsRow}>
+                  <Pressable
+                    hitSlop={10}
+                    style={({ pressed }) => [
+                      styles.toolsDockButton,
+                      editLayoutMode ? styles.toolsDockButtonActive : null,
+                      pressed ? styles.dockButtonPressed : null,
+                    ]}
+                    onPress={() => runToolAction(() => setEditLayoutMode((previous) => !previous))}
+                  >
+                    <Text style={styles.toolsDockButtonText}>{editLayoutMode ? 'Done' : 'Edit'}</Text>
+                  </Pressable>
+                  {editLayoutMode ? (
+                    <>
+                      <Pressable
+                        hitSlop={10}
+                        style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                        onPress={() => runToolAction(() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length))}
+                      >
+                        <Text style={styles.toolsDockButtonText}>Grid {gridSize}</Text>
+                      </Pressable>
+                      <Pressable
+                        hitSlop={10}
+                        style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                        onPress={() => runToolAction(() => setExportVisible(true))}
+                      >
+                        <Text style={styles.toolsDockButtonText}>Export</Text>
+                      </Pressable>
+                    </>
+                  ) : null}
+                </View>
+              ) : null}
             </Animated.View>
             <Pressable
               hitSlop={12}
@@ -4578,130 +4542,63 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  toolsHoldCenterOverlay: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  toolsHoldCenterVisual: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toolsHoldCenterIconWrap: {
-    width: TOOLS_CENTER_HOLD_WRAP_SIZE,
-    height: TOOLS_CENTER_HOLD_WRAP_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  toolsHoldCenterFillClipFromRight: {
-    position: 'absolute',
-    right: 0,
-    top: 0,
-    bottom: 0,
-    overflow: 'hidden',
-    alignItems: 'flex-end',
-    justifyContent: 'center',
-  },
-  toolsHoldCenterFillClipCenter: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   toolsDockTray: {
     marginRight: 8,
     maxWidth: '78%',
     flexDirection: 'column',
-    alignItems: 'stretch',
+    alignItems: 'flex-start',
     gap: 6,
-    backgroundColor: 'rgba(16, 26, 38, 0.96)',
-    borderRadius: 16,
+    backgroundColor: '#111d2d',
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#355176',
     paddingHorizontal: 8,
-    paddingVertical: 7,
+    paddingVertical: 8,
   },
   toolsDockHintStrip: {
-    width: TOOLS_HOLD_PROGRESS_WIDTH + 16,
     minHeight: 28,
-    borderRadius: 10,
+    borderRadius: 9,
     borderWidth: 1,
-    borderColor: '#2c4565',
-    backgroundColor: 'rgba(13, 21, 33, 0.88)',
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    flexDirection: 'row',
+    paddingVertical: 6,
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    alignSelf: 'center',
+    justifyContent: 'center',
   },
   toolsDockHintStripText: {
-    flexShrink: 1,
-    marginRight: 6,
-    color: '#a9bfdc',
-    fontSize: 10,
+    color: '#bcd0ee',
+    fontSize: 11,
     fontWeight: '700',
-  },
-  toolsDockHintStripTextActive: {
-    color: '#d7e9ff',
-  },
-  toolsDockHoldTrack: {
-    width: 86,
-    height: 5,
-    borderRadius: 3,
-    borderWidth: 1,
-    borderColor: '#355272',
-    backgroundColor: '#18283a',
-    overflow: 'hidden',
-  },
-  toolsDockHoldFill: {
-    height: 5,
-    borderRadius: 3,
-    backgroundColor: '#68b1ff',
-  },
-  toolsDockHoldFillHidden: {
-    width: 0,
-    opacity: 0,
   },
   toolsDockActionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
     gap: 8,
-    justifyContent: 'center',
-    alignSelf: 'center',
+    justifyContent: 'flex-start',
   },
   toolsDockButton: {
     paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 10,
-    backgroundColor: '#1d2c42',
+    paddingVertical: 6,
+    borderRadius: 9,
     borderWidth: 1,
-    borderColor: '#3b5a84',
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
   },
   toolsDockIconButton: {
-    minWidth: TOOLS_DOCK_ICON_WRAP_SIZE,
-    minHeight: TOOLS_DOCK_ICON_WRAP_SIZE,
-    paddingHorizontal: 2,
-    paddingVertical: 2,
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'transparent',
-    borderWidth: 0,
-    borderColor: 'transparent',
-    position: 'relative',
-    overflow: 'visible',
   },
   toolsDockIconButtonActive: {
-    borderRadius: 8,
-    backgroundColor: 'rgba(56, 96, 140, 0.55)',
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
   },
   toolsDockIconWrap: {
     width: TOOLS_DOCK_ICON_WRAP_SIZE,
@@ -4711,29 +4608,29 @@ const styles = StyleSheet.create({
   },
   toolsDockButtonActive: {
     backgroundColor: '#2a7af5',
-    borderColor: '#5c99ff',
+    borderColor: '#5d9bff',
   },
   toolsDockButtonDisabled: {
     opacity: 0.45,
   },
   toolsDockButtonText: {
-    color: '#dce8fa',
-    fontSize: 12,
+    color: '#bcd0ee',
+    fontSize: 11,
     fontWeight: '700',
   },
   toolsMainButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: '#1a2537',
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#162338',
     borderWidth: 1,
-    borderColor: '#324b6e',
+    borderColor: '#355176',
     justifyContent: 'center',
     alignItems: 'center',
   },
   toolsMainButtonActive: {
-    backgroundColor: '#244f8a',
-    borderColor: '#5a9dff',
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
   },
   debugPill: {
     position: 'absolute',
