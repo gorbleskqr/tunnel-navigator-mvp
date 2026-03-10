@@ -53,15 +53,18 @@ const LABEL_JUNCTION_WIDTH = 148;
 const LABEL_JUNCTION_COMPACT_WIDTH = 108;
 const LABEL_JUNCTION_MAX_WIDTH = 248;
 const LABEL_LINE_HEIGHT = 11.2;
-const LABEL_VERTICAL_PADDING = 2;
+const LABEL_VERTICAL_PADDING = 1;
+const LABEL_HORIZONTAL_PADDING = 12;
+const LABEL_MIN_WIDTH = 56;
 const LABEL_VIEWPORT_MARGIN = 20;
 const LABEL_LONG_PRESS_MS = 380;
 const LABEL_EXPAND_DURATION_MS = 1500;
 const LABEL_HOLD_FOCUS_MS = 1400;
-const LABEL_AUTO_PAN_MARGIN = 12;
-const LABEL_AUTO_PAN_MAX_SHIFT = 140;
 const WORLD_BOUNDS_PADDING = 180;
 const LABEL_LOW_ZOOM_PROGRESS_THRESHOLD = 0.24;
+const LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD = 0.5;
+const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.84;
+const LABEL_JUNCTION_CLUSTER_FULL_TEXT_PROGRESS_THRESHOLD = 0.72;
 const HOLD_TO_DELETE_MS = 320;
 const ENDPOINT_INDICATOR_MARGIN = 26;
 const ENDPOINT_INDICATOR_CLEARANCE = 54;
@@ -74,6 +77,16 @@ const DELETE_PROMPT_OFFSET_Y = 52;
 const ROUTE_DIRECTION_MARKER_SPACING = 56;
 const ROUTE_DIRECTION_MARKER_MIN_LENGTH = 44;
 const LEVEL_CHANGE_ICON_MIN_LENGTH = 52;
+const LABEL_ROUTE_OCCLUSION_BUFFER = 8;
+const LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER = 4;
+const TOOLS_DOCK_ICON_SIZE = 28;
+const TOOLS_DOCK_ICON_WRAP_SIZE = 32;
+const TOOLS_HOLD_PROGRESS_WIDTH = 164;
+const TOOLS_CENTER_HOLD_ICON_SIZE = 104;
+const TOOLS_CENTER_HOLD_WRAP_SIZE = 112;
+const TOOL_ACTION_HOLD_MS = 820;
+const TOOLS_DOCK_AUTO_HIDE_MS = 2200;
+const ROUTE_INFO_AUTO_HIDE_MS = 2600;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
 const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
@@ -164,9 +177,18 @@ interface LabelCandidate {
   alternateBottom: number | null;
   priority: number;
   pinned: boolean;
+  routeAnchored: boolean;
+  occludesHighlightedRoute: boolean;
 }
 
 interface LabelLayout {
+  left: number;
+  top: number;
+  occludesHighlightedRoute: boolean;
+}
+
+interface ExpandedLabelAnchor {
+  slotId: string;
   left: number;
   top: number;
 }
@@ -176,6 +198,13 @@ interface LabelPresentation {
   lines: number;
   width: number;
   height: number;
+}
+
+interface LabelBuildOptions {
+  maxWidth: number;
+  minWidth: number;
+  maxLines: number;
+  widthBuffer?: number;
 }
 
 interface TapPulseState {
@@ -193,6 +222,7 @@ interface EndpointIndicator {
 }
 
 type InfoTab = 'route' | 'legend';
+type HoldToolAction = 'swap' | 'clear';
 
 function approxEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < 0.0001;
@@ -298,6 +328,121 @@ function labelsOverlap(a: LabelCandidate, b: LabelCandidate): boolean {
   );
 }
 
+function rectanglesOverlap(
+  aLeft: number,
+  aTop: number,
+  aRight: number,
+  aBottom: number,
+  bLeft: number,
+  bTop: number,
+  bRight: number,
+  bBottom: number,
+  padX = 0,
+  padY = 0,
+): boolean {
+  return !(
+    aRight < bLeft - padX
+    || aLeft > bRight + padX
+    || aBottom < bTop - padY
+    || aTop > bBottom + padY
+  );
+}
+
+function pointInRect(
+  x: number,
+  y: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): boolean {
+  return x >= left && x <= right && y >= top && y <= bottom;
+}
+
+function segmentCross(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  cx: number,
+  cy: number,
+): number {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+function pointOnSegment(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  px: number,
+  py: number,
+): boolean {
+  return (
+    px >= Math.min(ax, bx) - 0.0001
+    && px <= Math.max(ax, bx) + 0.0001
+    && py >= Math.min(ay, by) - 0.0001
+    && py <= Math.max(ay, by) + 0.0001
+  );
+}
+
+function segmentsIntersect(
+  a1x: number,
+  a1y: number,
+  a2x: number,
+  a2y: number,
+  b1x: number,
+  b1y: number,
+  b2x: number,
+  b2y: number,
+): boolean {
+  const d1 = segmentCross(a1x, a1y, a2x, a2y, b1x, b1y);
+  const d2 = segmentCross(a1x, a1y, a2x, a2y, b2x, b2y);
+  const d3 = segmentCross(b1x, b1y, b2x, b2y, a1x, a1y);
+  const d4 = segmentCross(b1x, b1y, b2x, b2y, a2x, a2y);
+
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) {
+    return true;
+  }
+
+  if (Math.abs(d1) <= 0.0001 && pointOnSegment(a1x, a1y, a2x, a2y, b1x, b1y)) {
+    return true;
+  }
+  if (Math.abs(d2) <= 0.0001 && pointOnSegment(a1x, a1y, a2x, a2y, b2x, b2y)) {
+    return true;
+  }
+  if (Math.abs(d3) <= 0.0001 && pointOnSegment(b1x, b1y, b2x, b2y, a1x, a1y)) {
+    return true;
+  }
+  if (Math.abs(d4) <= 0.0001 && pointOnSegment(b1x, b1y, b2x, b2y, a2x, a2y)) {
+    return true;
+  }
+
+  return false;
+}
+
+function segmentIntersectsRect(
+  segment: EdgeSegment,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): boolean {
+  if (
+    pointInRect(segment.x1, segment.y1, left, top, right, bottom)
+    || pointInRect(segment.x2, segment.y2, left, top, right, bottom)
+  ) {
+    return true;
+  }
+
+  return (
+    segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, left, top, right, top)
+    || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, right, top, right, bottom)
+    || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, right, bottom, left, bottom)
+    || segmentsIntersect(segment.x1, segment.y1, segment.x2, segment.y2, left, bottom, left, top)
+  );
+}
+
 function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
   if (endpoints.length === 0) {
     return [];
@@ -316,6 +461,158 @@ function endpointOrder(endpoints: Endpoint[]): Endpoint[] {
     { id: 'start', slotId: start.slotId },
     { id: 'end', slotId: end.slotId },
   ];
+}
+
+function estimateTextWidth(text: string): number {
+  let width = 0;
+  for (const ch of text) {
+    if (ch === ' ') {
+      width += 2.9;
+    } else if (/[ilI1'`,.:;|!]/.test(ch)) {
+      width += 3.3;
+    } else if (/[MW@#%&]/.test(ch)) {
+      width += 7.2;
+    } else if (/[A-Z0-9]/.test(ch)) {
+      width += 6.2;
+    } else if (/[\/\\()\-\+]/.test(ch)) {
+      width += 4.5;
+    } else {
+      width += 5.4;
+    }
+  }
+  return width;
+}
+
+function trimLineToWidth(text: string, maxInnerWidth: number): string {
+  if (estimateTextWidth(text) <= maxInnerWidth) {
+    return text;
+  }
+
+  let trimmed = text.trimEnd();
+  const ellipsis = '...';
+  while (trimmed.length > 0 && estimateTextWidth(`${trimmed}${ellipsis}`) > maxInnerWidth) {
+    trimmed = trimmed.slice(0, -1);
+  }
+
+  return `${trimmed}${ellipsis}`;
+}
+
+function wrapLongToken(token: string, maxInnerWidth: number): string[] {
+  if (token.length === 0) {
+    return [''];
+  }
+
+  const lines: string[] = [];
+  let current = '';
+  for (const ch of token) {
+    const candidate = `${current}${ch}`;
+    if (current.length > 0 && estimateTextWidth(candidate) > maxInnerWidth) {
+      lines.push(current);
+      current = ch;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) {
+    lines.push(current);
+  }
+
+  return lines;
+}
+
+function wrapTextToLines(text: string, maxInnerWidth: number, maxLines: number): string[] {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) {
+    return [''];
+  }
+
+  const rawLines = trimmed.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+  const sourceLines = rawLines.length > 0 ? rawLines : [trimmed];
+  const wrapped: string[] = [];
+
+  for (const sourceLine of sourceLines) {
+    const words = sourceLine.split(/\s+/).filter((word) => word.length > 0);
+    if (words.length === 0) {
+      wrapped.push('');
+      continue;
+    }
+
+    let current = '';
+    for (const word of words) {
+      const next = current.length > 0 ? `${current} ${word}` : word;
+      if (estimateTextWidth(next) <= maxInnerWidth) {
+        current = next;
+        continue;
+      }
+
+      if (current.length > 0) {
+        wrapped.push(current);
+        current = '';
+      }
+
+      if (estimateTextWidth(word) <= maxInnerWidth) {
+        current = word;
+      } else {
+        const tokenParts = wrapLongToken(word, maxInnerWidth);
+        wrapped.push(...tokenParts.slice(0, -1));
+        current = tokenParts[tokenParts.length - 1] ?? '';
+      }
+    }
+
+    if (current.length > 0) {
+      wrapped.push(current);
+    }
+  }
+
+  if (wrapped.length <= maxLines) {
+    return wrapped;
+  }
+
+  const limited = wrapped.slice(0, maxLines);
+  const lastIndex = limited.length - 1;
+  limited[lastIndex] = trimLineToWidth(limited[lastIndex], maxInnerWidth);
+  return limited;
+}
+
+function buildLabelPresentation(text: string, options: LabelBuildOptions): LabelPresentation {
+  const maxInnerWidth = Math.max(24, options.maxWidth - LABEL_HORIZONTAL_PADDING);
+  const lines = wrapTextToLines(text, maxInnerWidth, options.maxLines);
+  const widestLine = lines.reduce((widest, line) => Math.max(widest, estimateTextWidth(line)), 0);
+  const widthBuffer = options.widthBuffer ?? 6;
+  const width = clamp(
+    Math.ceil(widestLine + LABEL_HORIZONTAL_PADDING + widthBuffer),
+    options.minWidth,
+    options.maxWidth,
+  );
+
+  return {
+    text: lines.join('\n'),
+    lines: Math.max(1, lines.length),
+    width,
+    height: LABEL_LINE_HEIGHT * Math.max(1, lines.length) + LABEL_VERTICAL_PADDING * 2,
+  };
+}
+
+function getJunctionCompactLabel(aliasLabels: string[]): string {
+  if (aliasLabels.length === 0) {
+    return '';
+  }
+
+  if (aliasLabels.length === 1) {
+    return aliasLabels[0];
+  }
+
+  // Keep 2-short-name junctions compact and readable (e.g., P1/ML).
+  if (
+    aliasLabels.length === 2
+    && aliasLabels[0].length <= 5
+    && aliasLabels[1].length <= 5
+  ) {
+    return `${aliasLabels[0]}/${aliasLabels[1]}`;
+  }
+
+  const base = aliasLabels[0].trim();
+  return `${base} +${aliasLabels.length - 1}`;
 }
 
 function getLabelPresentation(
@@ -347,72 +644,47 @@ function getLabelPresentation(
     }
 
     if (!emphasized) {
-      return {
-        text: aliasLabels.length > 1 ? `${aliasLabels[0]} +${aliasLabels.length - 1}` : aliasLabels[0],
-        lines: 1,
-        width: LABEL_JUNCTION_COMPACT_WIDTH,
-        height: LABEL_LINE_HEIGHT + LABEL_VERTICAL_PADDING * 2,
-      };
+      const compact = getJunctionCompactLabel(aliasLabels);
+      return buildLabelPresentation(compact, {
+        minWidth: Math.min(LABEL_MIN_WIDTH, LABEL_JUNCTION_COMPACT_WIDTH),
+        maxWidth: LABEL_JUNCTION_COMPACT_WIDTH,
+        maxLines: 1,
+        widthBuffer: 4,
+      });
     }
 
-    const longestAliasLength = aliasLabels.reduce((longest, current) => {
-      return Math.max(longest, current.length);
-    }, 0);
-    const expandedWidth = clamp(
-      LABEL_JUNCTION_WIDTH + longestAliasLength * 3.1,
-      LABEL_JUNCTION_WIDTH,
-      LABEL_JUNCTION_MAX_WIDTH,
-    );
-    const visibleAliasCount = highZoomExpanded ? 6 : 4;
+    const visibleAliasCount = highZoomExpanded ? 10 : 6;
     const lines = aliasLabels.length > (visibleAliasCount + 1)
       ? [...aliasLabels.slice(0, visibleAliasCount), `+${aliasLabels.length - visibleAliasCount} more`]
       : aliasLabels;
-    const lineCount = Math.min(highZoomExpanded ? 8 : 6, lines.length);
+    return buildLabelPresentation(lines.join('\n'), {
+      minWidth: Math.max(72, LABEL_MIN_WIDTH),
+      maxWidth: LABEL_JUNCTION_MAX_WIDTH,
+      maxLines: highZoomExpanded ? 10 : 7,
+      widthBuffer: 12,
+    });
+  }
 
-    return {
-      text: lines.join('\n'),
-      lines: lineCount,
-      width: highZoomExpanded ? Math.min(LABEL_JUNCTION_MAX_WIDTH, expandedWidth + 14) : expandedWidth,
-      height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
-    };
+  const trimmedLabel = slot.node.label.trim();
+  if (trimmedLabel.length === 0) {
+    return null;
   }
 
   if (!emphasized) {
-    return {
-      text: slot.node.label,
-      lines: 1,
-      width: LABEL_COMPACT_WIDTH,
-      height: LABEL_LINE_HEIGHT + LABEL_VERTICAL_PADDING * 2,
-    };
+    return buildLabelPresentation(trimmedLabel, {
+      minWidth: LABEL_MIN_WIDTH,
+      maxWidth: LABEL_COMPACT_WIDTH,
+      maxLines: 1,
+      widthBuffer: 4,
+    });
   }
 
-  const width = clamp(
-    slot.node.label.length * 6 + 26,
-    72,
-    highZoomExpanded ? LABEL_BASE_WIDTH + 16 : LABEL_BASE_WIDTH + 8,
-  );
-  const maxLines = highZoomExpanded ? 4 : 3;
-  const lineCount = estimateWrappedLineCount(slot.node.label, width, maxLines);
-
-  return {
-    text: slot.node.label,
-    lines: lineCount,
-    width,
-    height: LABEL_LINE_HEIGHT * lineCount + LABEL_VERTICAL_PADDING * 2,
-  };
-}
-
-function estimateWrappedLineCount(text: string, width: number, maxLines: number): number {
-  const trimmed = text.trim();
-  if (trimmed.length === 0) {
-    return 1;
-  }
-
-  const innerWidth = Math.max(24, width - 10);
-  const approxCharWidth = 4.75;
-  const charsPerLine = Math.max(6, Math.floor(innerWidth / approxCharWidth));
-  const estimated = Math.ceil(trimmed.length / charsPerLine);
-  return Math.max(1, Math.min(maxLines, estimated));
+  return buildLabelPresentation(trimmedLabel, {
+    minWidth: 70,
+    maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 96) : (LABEL_BASE_WIDTH + 40),
+    maxLines: highZoomExpanded ? 7 : 5,
+    widthBuffer: highZoomExpanded ? 18 : 12,
+  });
 }
 
 function hasUsableLabel(slot: Slot): boolean {
@@ -459,9 +731,12 @@ export default function GraphCanvas() {
   const [screenTapPulse, setScreenTapPulse] = useState<TapPulseState | null>(null);
   const [toolsDockOpen, setToolsDockOpen] = useState(false);
   const [toolsPinned, setToolsPinned] = useState(false);
+  const [activeToolHoldAction, setActiveToolHoldAction] = useState<HoldToolAction | null>(null);
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
+  const [routeInfoPinned, setRouteInfoPinned] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>('route');
   const [expandedLabelSlotId, setExpandedLabelSlotId] = useState<string | null>(null);
+  const [expandedLabelAnchor, setExpandedLabelAnchor] = useState<ExpandedLabelAnchor | null>(null);
   const [holdFocusSlotId, setHoldFocusSlotId] = useState<string | null>(null);
   const [deletePrompt, setDeletePrompt] = useState<DeletePromptState | null>(null);
   const [logoHintVisible, setLogoHintVisible] = useState(false);
@@ -491,15 +766,20 @@ export default function GraphCanvas() {
   const logoHintAnim = useRef(new Animated.Value(0)).current;
   const focusHintAnim = useRef(new Animated.Value(0)).current;
   const toolsDockAnim = useRef(new Animated.Value(0)).current;
+  const swapHoldAnim = useRef(new Animated.Value(0)).current;
+  const clearHoldAnim = useRef(new Animated.Value(0)).current;
   const canvasRef = useRef<View | null>(null);
   const logoHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandedLabelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const holdFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const expandedLabelAutoPanRef = useRef<string | null>(null);
   const labelHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toolHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toolsAutoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeToolHoldActionRef = useRef<HoldToolAction | null>(null);
+  const routeInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   slotsRef.current = slots;
   endpointsRef.current = endpoints;
@@ -641,29 +921,38 @@ export default function GraphCanvas() {
       return;
     }
 
+    if (!editLayoutRef.current && slot && viewportSize.width > 0 && viewportSize.height > 0) {
+      const slotScreenX = worldToScreenX(slot.x, viewportRef.current);
+      const slotScreenY = worldToScreenY(slot.y, viewportRef.current);
+      const slotRadius = clamp(SLOT_RADIUS * viewportRef.current.scale, 8, 30);
+      const visibleMargin = slotRadius * 0.35;
+      const mostlyVisible = (
+        slotScreenX >= visibleMargin
+        && slotScreenX <= viewportSize.width - visibleMargin
+        && slotScreenY >= visibleMargin
+        && slotScreenY <= viewportSize.height - visibleMargin
+      );
+      if (!mostlyVisible) {
+        triggerTapPulse(slotId);
+        triggerHaptic('light');
+        return;
+      }
+    }
+
     triggerTapPulse(slotId);
     triggerHaptic('light');
 
-    const currentPresentation = labelPresentationById.get(slotId);
     const currentLayout = labelLayoutById.get(slotId);
-    const compactPresentation = slot
-      ? getLabelPresentation(slot, editLayoutMode, false, false)
-      : null;
-    const currentlyExpandedAndVisible = Boolean(
-      currentPresentation
-      && currentLayout
-      && compactPresentation
-      && (
-        currentPresentation.lines > compactPresentation.lines
-        || currentPresentation.width > compactPresentation.width + 4
-        || currentPresentation.text !== compactPresentation.text
-      ),
-    );
-    if (!editLayoutRef.current && currentlyExpandedAndVisible) {
-      panLabelIntoView(slotId, `visible:${slotId}`);
-      return;
-    }
 
+    if (currentLayout) {
+      setExpandedLabelAnchor({
+        slotId,
+        left: currentLayout.left,
+        top: currentLayout.top,
+      });
+    } else {
+      setExpandedLabelAnchor(null);
+    }
     setExpandedLabelSlotId(slotId);
     if (expandedLabelTimerRef.current) {
       clearTimeout(expandedLabelTimerRef.current);
@@ -680,7 +969,7 @@ export default function GraphCanvas() {
       clearTimeout(expandedLabelTimerRef.current);
       expandedLabelTimerRef.current = null;
     }
-    expandedLabelAutoPanRef.current = null;
+    setExpandedLabelAnchor(null);
     setExpandedLabelSlotId(null);
   };
 
@@ -700,6 +989,51 @@ export default function GraphCanvas() {
       clearTimeout(endpointHoldTimerRef.current);
       endpointHoldTimerRef.current = null;
     }
+  };
+
+  const clearRouteInfoAutoHideTimer = (): void => {
+    if (routeInfoTimerRef.current) {
+      clearTimeout(routeInfoTimerRef.current);
+      routeInfoTimerRef.current = null;
+    }
+  };
+
+  const getToolHoldAnim = (action: HoldToolAction): Animated.Value => {
+    return action === 'swap' ? swapHoldAnim : clearHoldAnim;
+  };
+
+  const clearToolHoldTimer = (): void => {
+    if (toolHoldTimerRef.current) {
+      clearTimeout(toolHoldTimerRef.current);
+      toolHoldTimerRef.current = null;
+    }
+  };
+
+  const clearToolsAutoHideTimer = (): void => {
+    if (toolsAutoHideTimerRef.current) {
+      clearTimeout(toolsAutoHideTimerRef.current);
+      toolsAutoHideTimerRef.current = null;
+    }
+  };
+
+  const cancelToolHold = (): void => {
+    clearToolHoldTimer();
+    const active = activeToolHoldActionRef.current;
+    if (!active) {
+      return;
+    }
+
+    const anim = getToolHoldAnim(active);
+    anim.stopAnimation();
+    Animated.timing(anim, {
+      toValue: 0,
+      duration: 120,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: false,
+    }).start();
+
+    activeToolHoldActionRef.current = null;
+    setActiveToolHoldAction(null);
   };
 
   const clearLabelHoldTimer = (): void => {
@@ -911,6 +1245,32 @@ export default function GraphCanvas() {
     return colorByEdge;
   }, [routes]);
 
+  const highlightedRouteScreenSegments = useMemo<EdgeSegment[]>(() => {
+    const segments: EdgeSegment[] = [];
+    if (routeEdgeColors.size === 0) {
+      return segments;
+    }
+
+    for (const edge of edges) {
+      if (!routeEdgeColors.has(edgeKey(edge.from, edge.to))) {
+        continue;
+      }
+
+      const worldSegments = getEdgeSegments(edge, slotById);
+      for (const segment of worldSegments) {
+        const screenSegment: EdgeSegment = {
+          x1: worldToScreenX(segment.x1, viewport),
+          y1: worldToScreenY(segment.y1, viewport),
+          x2: worldToScreenX(segment.x2, viewport),
+          y2: worldToScreenY(segment.y2, viewport),
+        };
+        segments.push(screenSegment);
+      }
+    }
+
+    return segments;
+  }, [edges, routeEdgeColors, slotById, viewport]);
+
   const primaryRouteEdgeFlow = useMemo(() => {
     const flowByKey = new Map<string, { index: number; from: string; to: string }>();
     const primary = routes[0];
@@ -951,7 +1311,7 @@ export default function GraphCanvas() {
       toValue: primaryCount,
       duration: Math.max(520, primaryCount * 180),
       easing: Easing.out(Easing.cubic),
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
   }, [primaryRouteEdgeIndex, routeReveal, routeSignature]);
 
@@ -1031,6 +1391,8 @@ export default function GraphCanvas() {
     const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
     const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
     const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
+    const mediumZoom = zoomProgress >= LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD;
+    const fullTextZoom = zoomProgress >= LABEL_FULL_TEXT_PROGRESS_THRESHOLD;
     const nearMaxZoom = zoomLimits.maxScale > 0
       && (viewport.scale / zoomLimits.maxScale) >= 0.9;
     const slotScreenById = new Map<string, { x: number; y: number; radius: number }>();
@@ -1045,12 +1407,39 @@ export default function GraphCanvas() {
     }
 
     for (const slot of slots) {
-      let emphasized = endpointSlotIds.has(slot.id)
+      const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
+      const isInteractionTarget = endpointSlotIds.has(slot.id)
         || highlightedSlotIds.has(slot.id)
-        || expandedLabelSlotId === slot.id
-        || nearMaxZoom;
+        || expandedLabelSlotId === slot.id;
+      const visibleAliasCount = slot.node.aliases.reduce((count, alias) => {
+        return alias.label.trim().length > 0 ? (count + 1) : count;
+      }, 0);
+      const junctionClusterFullTextByZoom = (
+        slot.node.type === 'junction'
+        && visibleAliasCount >= 3
+        && zoomProgress >= LABEL_JUNCTION_CLUSTER_FULL_TEXT_PROGRESS_THRESHOLD
+      );
+      const fullTextByZoom = fullTextZoom && slot.node.type !== 'junction';
+      const canPromoteByMedium = (
+        mediumZoom
+        && isImportantLowZoom
+        && slot.node.type !== 'junction'
+      );
+      let emphasized = (
+        isInteractionTarget
+        || nearMaxZoom
+        || fullTextByZoom
+        || junctionClusterFullTextByZoom
+        || canPromoteByMedium
+      );
 
-      if (!emphasized && !lowZoom && !editLayoutMode && slot.node.type !== 'intersection') {
+      if (
+        !emphasized
+        && !lowZoom
+        && !editLayoutMode
+        && slot.node.type !== 'intersection'
+        && slot.node.type !== 'junction'
+      ) {
         const expandedLabel = getLabelPresentation(slot, editLayoutMode, true, false);
         const slotScreen = slotScreenById.get(slot.id);
 
@@ -1103,7 +1492,7 @@ export default function GraphCanvas() {
         }
       }
 
-      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom);
+      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || fullTextByZoom);
       if (label) {
         presentation.set(slot.id, label);
       }
@@ -1115,6 +1504,7 @@ export default function GraphCanvas() {
     endpointSlotIds,
     expandedLabelSlotId,
     highlightedSlotIds,
+    importantLowZoomSlotIds,
     slots,
     viewport,
     viewportSize.height,
@@ -1132,9 +1522,43 @@ export default function GraphCanvas() {
     const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
     const zoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / zoomRange, 0, 1);
     const lowZoom = zoomProgress <= LABEL_LOW_ZOOM_PROGRESS_THRESHOLD;
+    const fullTextZoom = zoomProgress >= LABEL_FULL_TEXT_PROGRESS_THRESHOLD;
     const candidates: LabelCandidate[] = [];
+    const occludesHighlightedRoute = (
+      left: number,
+      top: number,
+      right: number,
+      bottom: number,
+      routeAnchored: boolean,
+    ): boolean => {
+      if (highlightedRouteScreenSegments.length === 0) {
+        return false;
+      }
+
+      const buffer = routeAnchored
+        ? LABEL_ROUTE_ANCHORED_OCCLUSION_BUFFER
+        : LABEL_ROUTE_OCCLUSION_BUFFER;
+
+      const bufferedLeft = left - buffer;
+      const bufferedTop = top - buffer;
+      const bufferedRight = right + buffer;
+      const bufferedBottom = bottom + buffer;
+
+      return highlightedRouteScreenSegments.some((segment) => {
+        return segmentIntersectsRect(
+          segment,
+          bufferedLeft,
+          bufferedTop,
+          bufferedRight,
+          bufferedBottom,
+        );
+      });
+    };
 
     for (const slot of slots) {
+      if (expandedLabelSlotId === slot.id) {
+        continue;
+      }
       const presentation = labelPresentationById.get(slot.id);
       if (!presentation) {
         continue;
@@ -1142,7 +1566,6 @@ export default function GraphCanvas() {
 
       const isEndpoint = endpointSlotIds.has(slot.id);
       const isHighlighted = highlightedSlotIds.has(slot.id);
-      const isExpanded = expandedLabelSlotId === slot.id;
       const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
       if (!editLayoutMode && lowZoom && !isImportantLowZoom) {
         continue;
@@ -1163,46 +1586,35 @@ export default function GraphCanvas() {
         continue;
       }
 
-      const isPinnedExpanded = isExpanded && !editLayoutMode;
-      const minLabelLeft = isPinnedExpanded
-        ? -presentation.width + LABEL_VIEWPORT_MARGIN
-        : LABEL_VIEWPORT_MARGIN;
-      const maxLabelLeft = isPinnedExpanded
-        ? viewportSize.width - LABEL_VIEWPORT_MARGIN
-        : Math.max(
-          LABEL_VIEWPORT_MARGIN,
-          viewportSize.width - presentation.width - LABEL_VIEWPORT_MARGIN,
-        );
-      const minLabelTop = isPinnedExpanded
-        ? -presentation.height + LABEL_VIEWPORT_MARGIN
-        : LABEL_VIEWPORT_MARGIN;
-      const maxLabelTop = isPinnedExpanded
-        ? viewportSize.height - LABEL_VIEWPORT_MARGIN
-        : Math.max(
-          LABEL_VIEWPORT_MARGIN,
-          viewportSize.height - presentation.height - LABEL_VIEWPORT_MARGIN,
-        );
+      const minLabelLeft = LABEL_VIEWPORT_MARGIN;
+      const maxLabelLeft = Math.max(
+        LABEL_VIEWPORT_MARGIN,
+        viewportSize.width - presentation.width - LABEL_VIEWPORT_MARGIN,
+      );
+      const minLabelTop = LABEL_VIEWPORT_MARGIN;
+      const maxLabelTop = Math.max(
+        LABEL_VIEWPORT_MARGIN,
+        viewportSize.height - presentation.height - LABEL_VIEWPORT_MARGIN,
+      );
       const preferredTopBelow = slotScreenY + slotRadius + 7;
       const preferredTopAbove = slotScreenY - slotRadius - presentation.height - 5;
       const belowTop = clamp(preferredTopBelow, minLabelTop, maxLabelTop);
       const aboveTop = clamp(preferredTopAbove, minLabelTop, maxLabelTop);
       const useAboveFirst = preferredTopBelow + presentation.height > maxLabelTop;
-      const top = useAboveFirst ? aboveTop : belowTop;
-      const alternateTop = useAboveFirst ? belowTop : aboveTop;
+      let top = useAboveFirst ? aboveTop : belowTop;
+      let alternateTop: number | null = useAboveFirst ? belowTop : aboveTop;
       const anchoredLeft = slotScreenX - presentation.width / 2;
-      const left = clamp(anchoredLeft, minLabelLeft, maxLabelLeft);
+      let left = clamp(anchoredLeft, minLabelLeft, maxLabelLeft);
       const right = left + presentation.width;
       const bottom = top + presentation.height;
-      const alternateBottom = alternateTop + presentation.height;
+      const alternateBottom = alternateTop === null ? null : (alternateTop + presentation.height);
       const centerDriftX = Math.abs((left + presentation.width / 2) - slotScreenX);
       const preferredTop = useAboveFirst ? preferredTopAbove : preferredTopBelow;
       const topDrift = Math.abs(top - preferredTop);
-      if (!isExpanded) {
-        const maxCenterDriftX = Math.max(24, slotRadius + 20);
-        const maxTopDrift = presentation.height + slotRadius + 10;
-        if (centerDriftX > maxCenterDriftX || topDrift > maxTopDrift) {
-          continue;
-        }
+      const maxCenterDriftX = Math.max(24, slotRadius + 20);
+      const maxTopDrift = presentation.height + slotRadius + (slot.node.type === 'junction' ? 28 : 10);
+      if (centerDriftX > maxCenterDriftX || topDrift > maxTopDrift) {
+        continue;
       }
 
       let priority = 0;
@@ -1212,11 +1624,16 @@ export default function GraphCanvas() {
       if (isHighlighted) {
         priority += 60;
       }
-      if (isExpanded) {
-        priority += 220;
-      }
       if (slot.node.type === 'building') {
         priority += 20;
+      } else if (slot.node.type === 'junction') {
+        priority += 22;
+        if (!fullTextZoom) {
+          priority += 18;
+        }
+        if (isImportantLowZoom && !fullTextZoom) {
+          priority += 24;
+        }
       }
       if (slot.node.exitOnly) {
         priority += 5;
@@ -1225,16 +1642,32 @@ export default function GraphCanvas() {
         priority += 26;
       }
 
+      const routeAnchored = isEndpoint || isHighlighted;
+      const candidateOccludesHighlightedRoute = occludesHighlightedRoute(
+        left,
+        top,
+        right,
+        bottom,
+        routeAnchored,
+      );
+      if (candidateOccludesHighlightedRoute && !routeAnchored) {
+        priority -= 72;
+      }
+
       candidates.push({
         id: slot.id,
         left,
         top,
         right,
         bottom,
-        alternateTop: Math.abs(alternateTop - top) > 1 ? alternateTop : null,
-        alternateBottom: Math.abs(alternateTop - top) > 1 ? alternateBottom : null,
+        alternateTop: alternateTop !== null && Math.abs(alternateTop - top) > 1 ? alternateTop : null,
+        alternateBottom: alternateTop !== null && alternateBottom !== null && Math.abs(alternateTop - top) > 1
+          ? alternateBottom
+          : null,
         priority,
-        pinned: isExpanded,
+        pinned: false,
+        routeAnchored,
+        occludesHighlightedRoute: candidateOccludesHighlightedRoute,
       });
     }
 
@@ -1243,6 +1676,7 @@ export default function GraphCanvas() {
         layouts.set(candidate.id, {
           left: candidate.left,
           top: candidate.top,
+          occludesHighlightedRoute: candidate.occludesHighlightedRoute,
         });
       }
       return layouts;
@@ -1255,6 +1689,11 @@ export default function GraphCanvas() {
       if (b.priority !== a.priority) {
         return b.priority - a.priority;
       }
+      const aRoutePenalty = a.occludesHighlightedRoute && !a.routeAnchored ? 1 : 0;
+      const bRoutePenalty = b.occludesHighlightedRoute && !b.routeAnchored ? 1 : 0;
+      if (aRoutePenalty !== bRoutePenalty) {
+        return aRoutePenalty - bRoutePenalty;
+      }
       if (a.top !== b.top) {
         return a.top - b.top;
       }
@@ -1262,20 +1701,35 @@ export default function GraphCanvas() {
     });
 
     const accepted: LabelCandidate[] = [];
+    const hasPinnedExpanded = candidates.some((candidate) => candidate.pinned);
+    const collidesWithAccepted = (
+      candidate: LabelCandidate,
+      ignorePinnedExpanded: boolean,
+    ): boolean => {
+      return accepted.some((existing) => {
+        if (ignorePinnedExpanded && hasPinnedExpanded && existing.pinned) {
+          return false;
+        }
+        return labelsOverlap(candidate, existing);
+      });
+    };
+
     for (const candidate of candidates) {
       if (candidate.pinned) {
         accepted.push(candidate);
         layouts.set(candidate.id, {
           left: candidate.left,
           top: candidate.top,
+          occludesHighlightedRoute: candidate.occludesHighlightedRoute,
         });
         continue;
       }
 
       let placed: LabelCandidate | null = candidate;
-      const collidesPrimary = accepted.some((existing) => labelsOverlap(candidate, existing));
+      const collidesPrimary = collidesWithAccepted(candidate, true);
+      const primaryOccludesHighlightedRoute = candidate.occludesHighlightedRoute && !candidate.routeAnchored;
 
-      if (collidesPrimary) {
+      if (collidesPrimary || primaryOccludesHighlightedRoute) {
         if (candidate.alternateTop === null || candidate.alternateBottom === null) {
           placed = null;
         } else {
@@ -1285,9 +1739,20 @@ export default function GraphCanvas() {
             bottom: candidate.alternateBottom,
             alternateTop: null,
             alternateBottom: null,
+            occludesHighlightedRoute: occludesHighlightedRoute(
+              candidate.left,
+              candidate.alternateTop,
+              candidate.right,
+              candidate.alternateBottom,
+              candidate.routeAnchored,
+            ),
           };
-          const collidesAlternate = accepted.some((existing) => labelsOverlap(alternateCandidate, existing));
-          placed = collidesAlternate ? null : alternateCandidate;
+          const collidesAlternate = collidesWithAccepted(alternateCandidate, true);
+          const alternateOccludesHighlightedRoute = (
+            alternateCandidate.occludesHighlightedRoute
+            && !alternateCandidate.routeAnchored
+          );
+          placed = (collidesAlternate || alternateOccludesHighlightedRoute) ? null : alternateCandidate;
         }
       }
 
@@ -1299,6 +1764,7 @@ export default function GraphCanvas() {
       layouts.set(placed.id, {
         left: placed.left,
         top: placed.top,
+        occludesHighlightedRoute: placed.occludesHighlightedRoute,
       });
     }
 
@@ -1309,6 +1775,7 @@ export default function GraphCanvas() {
     endpointSlotIds,
     highlightedSlotIds,
     importantLowZoomSlotIds,
+    highlightedRouteScreenSegments,
     labelPresentationById,
     slots,
     viewport,
@@ -1316,6 +1783,58 @@ export default function GraphCanvas() {
     viewportSize.width,
     zoomLimits.maxScale,
     zoomLimits.minScale,
+  ]);
+
+  const suppressedByExpandedLabelIds = useMemo(() => {
+    const suppressed = new Set<string>();
+    if (!expandedLabelSlotId || !expandedLabelAnchor) {
+      return suppressed;
+    }
+
+    const expandedSlot = slotById.get(expandedLabelSlotId);
+    if (!expandedSlot) {
+      return suppressed;
+    }
+
+    const expandedPresentation = getLabelPresentation(expandedSlot, editLayoutMode, true, true);
+    if (!expandedPresentation) {
+      return suppressed;
+    }
+
+    const expandedLeft = expandedLabelAnchor.left;
+    const expandedTop = expandedLabelAnchor.top;
+    const expandedRight = expandedLeft + expandedPresentation.width;
+    const expandedBottom = expandedTop + expandedPresentation.height;
+
+    for (const slot of slots) {
+      if (slot.id === expandedLabelSlotId) {
+        continue;
+      }
+
+      const layout = labelLayoutById.get(slot.id);
+      const presentation = labelPresentationById.get(slot.id);
+      if (!layout || !presentation) {
+        continue;
+      }
+
+      const left = layout.left;
+      const top = layout.top;
+      const right = left + presentation.width;
+      const bottom = top + presentation.height;
+      if (rectanglesOverlap(expandedLeft, expandedTop, expandedRight, expandedBottom, left, top, right, bottom, 3, 2)) {
+        suppressed.add(slot.id);
+      }
+    }
+
+    return suppressed;
+  }, [
+    editLayoutMode,
+    expandedLabelAnchor,
+    expandedLabelSlotId,
+    labelLayoutById,
+    labelPresentationById,
+    slotById,
+    slots,
   ]);
 
   useEffect(() => {
@@ -1376,58 +1895,6 @@ export default function GraphCanvas() {
     const clampedViewport = clampViewport({ ...next, scale: clampedScale }, bounds, viewportSizeRef.current);
     setViewport(clampedViewport);
   };
-
-  function panLabelIntoView(slotId: string, panKey: string): void {
-    if (expandedLabelAutoPanRef.current === panKey) {
-      return;
-    }
-
-    const layout = labelLayoutById.get(slotId);
-    const presentation = labelPresentationById.get(slotId);
-    if (!layout || !presentation || viewportSize.width <= 0 || viewportSize.height <= 0) {
-      return;
-    }
-
-    const left = layout.left;
-    const right = layout.left + presentation.width;
-    const top = layout.top;
-    const bottom = layout.top + presentation.height;
-    const maxX = viewportSize.width - LABEL_AUTO_PAN_MARGIN;
-    const maxY = viewportSize.height - LABEL_AUTO_PAN_MARGIN;
-
-    let shiftX = 0;
-    let shiftY = 0;
-    if (left < LABEL_AUTO_PAN_MARGIN) {
-      shiftX = LABEL_AUTO_PAN_MARGIN - left;
-    } else if (right > maxX) {
-      shiftX = maxX - right;
-    }
-    if (top < LABEL_AUTO_PAN_MARGIN) {
-      shiftY = LABEL_AUTO_PAN_MARGIN - top;
-    } else if (bottom > maxY) {
-      shiftY = maxY - bottom;
-    }
-
-    expandedLabelAutoPanRef.current = panKey;
-    if (Math.abs(shiftX) < 1 && Math.abs(shiftY) < 1) {
-      return;
-    }
-
-    setViewportClamped({
-      scale: viewportRef.current.scale,
-      tx: viewportRef.current.tx + clamp(shiftX, -LABEL_AUTO_PAN_MAX_SHIFT, LABEL_AUTO_PAN_MAX_SHIFT),
-      ty: viewportRef.current.ty + clamp(shiftY, -LABEL_AUTO_PAN_MAX_SHIFT, LABEL_AUTO_PAN_MAX_SHIFT),
-    });
-  }
-
-  useEffect(() => {
-    if (!expandedLabelSlotId) {
-      expandedLabelAutoPanRef.current = null;
-      return;
-    }
-
-    panLabelIntoView(expandedLabelSlotId, `expanded:${expandedLabelSlotId}`);
-  }, [expandedLabelSlotId, labelLayoutById, labelPresentationById, viewportSize.height, viewportSize.width]);
 
   const centerOnSlot = (slotId: string, scale?: number): void => {
     const targetSlot = slotById.get(slotId);
@@ -1573,6 +2040,15 @@ export default function GraphCanvas() {
       if (deletePromptTimerRef.current) {
         clearTimeout(deletePromptTimerRef.current);
       }
+      if (toolHoldTimerRef.current) {
+        clearTimeout(toolHoldTimerRef.current);
+      }
+      if (toolsAutoHideTimerRef.current) {
+        clearTimeout(toolsAutoHideTimerRef.current);
+      }
+      if (routeInfoTimerRef.current) {
+        clearTimeout(routeInfoTimerRef.current);
+      }
     };
   }, []);
 
@@ -1596,6 +2072,48 @@ export default function GraphCanvas() {
   }, [toolsDockAnim, toolsDockOpen]);
 
   useEffect(() => {
+    if (!toolsDockOpen) {
+      cancelToolHold();
+    }
+  }, [toolsDockOpen]);
+
+  useEffect(() => {
+    if (!toolsDockOpen || toolsPinned || activeToolHoldAction) {
+      clearToolsAutoHideTimer();
+      return;
+    }
+
+    clearToolsAutoHideTimer();
+    toolsAutoHideTimerRef.current = setTimeout(() => {
+      setToolsDockOpen(false);
+      toolsAutoHideTimerRef.current = null;
+    }, TOOLS_DOCK_AUTO_HIDE_MS);
+
+    return () => {
+      clearToolsAutoHideTimer();
+    };
+  }, [activeToolHoldAction, toolsDockOpen, toolsPinned]);
+
+  useEffect(() => {
+    if (!routeInfoOpen || routeInfoPinned) {
+      clearRouteInfoAutoHideTimer();
+      return;
+    }
+
+    clearRouteInfoAutoHideTimer();
+    routeInfoTimerRef.current = setTimeout(() => {
+      setRouteInfoOpen(false);
+      routeInfoTimerRef.current = null;
+    }, ROUTE_INFO_AUTO_HIDE_MS);
+  }, [routeInfoOpen, routeInfoPinned]);
+
+  useEffect(() => {
+    if (!routeInfoOpen && routeInfoPinned) {
+      setRouteInfoPinned(false);
+    }
+  }, [routeInfoOpen, routeInfoPinned]);
+
+  useEffect(() => {
     if (routes.length === 0) {
       routeGlow.setValue(0);
       return;
@@ -1606,7 +2124,7 @@ export default function GraphCanvas() {
       toValue: 1,
       duration: 680,
       easing: Easing.out(Easing.quad),
-      useNativeDriver: true,
+      useNativeDriver: false,
     }).start();
   }, [routeGlow, routeSignature]);
 
@@ -1815,6 +2333,10 @@ export default function GraphCanvas() {
 
     setDraggingEndpoint(null);
     draggingEndpointRef.current = null;
+    const droppedSlot = slotById.get(targetSlotId);
+    if (!editLayoutRef.current && droppedSlot && hasUsableLabel(droppedSlot)) {
+      showExpandedLabel(targetSlotId);
+    }
     triggerHaptic('light');
   };
 
@@ -2229,6 +2751,57 @@ export default function GraphCanvas() {
     }
   };
 
+  const startToolHold = (actionId: HoldToolAction, action: () => void): void => {
+    if (actionId === 'swap' && endpointsRef.current.length !== 2) {
+      return;
+    }
+
+    if (activeToolHoldActionRef.current && activeToolHoldActionRef.current !== actionId) {
+      cancelToolHold();
+    }
+
+    const anim = getToolHoldAnim(actionId);
+    clearToolHoldTimer();
+    anim.stopAnimation();
+    anim.setValue(0);
+
+    activeToolHoldActionRef.current = actionId;
+    setActiveToolHoldAction(actionId);
+
+    Animated.timing(anim, {
+      toValue: 1,
+      duration: TOOL_ACTION_HOLD_MS,
+      easing: Easing.linear,
+      useNativeDriver: false,
+    }).start();
+
+    toolHoldTimerRef.current = setTimeout(() => {
+      if (activeToolHoldActionRef.current !== actionId) {
+        return;
+      }
+
+      activeToolHoldActionRef.current = null;
+      setActiveToolHoldAction(null);
+      clearToolHoldTimer();
+      runToolAction(action);
+
+      anim.stopAnimation();
+      Animated.timing(anim, {
+        toValue: 0,
+        duration: 160,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      }).start();
+    }, TOOL_ACTION_HOLD_MS);
+  };
+
+  const releaseToolHold = (actionId: HoldToolAction): void => {
+    if (activeToolHoldActionRef.current !== actionId) {
+      return;
+    }
+    cancelToolHold();
+  };
+
   const endpointIndicators = useMemo<EndpointIndicator[]>(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
       return [];
@@ -2345,6 +2918,27 @@ export default function GraphCanvas() {
   }, [endpoints, slotById, viewport, viewportSize.height, viewportSize.width]);
 
   const dropPreviewSlotId = draggingEndpoint?.targetSlotId;
+  const swapHoldProgressWidth = swapHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, TOOLS_HOLD_PROGRESS_WIDTH],
+  });
+  const clearHoldProgressWidth = clearHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, TOOLS_HOLD_PROGRESS_WIDTH],
+  });
+  const swapHoldCenterInset = swapHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [TOOLS_CENTER_HOLD_WRAP_SIZE / 2, 0],
+  });
+  const clearHoldCenterWidth = clearHoldAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, TOOLS_CENTER_HOLD_WRAP_SIZE],
+  });
+  const toolsHoldHintText = activeToolHoldAction === 'swap'
+    ? 'Hold to swap'
+    : activeToolHoldAction === 'clear'
+      ? 'Hold to clear'
+      : 'Hold to confirm';
   const toolsDockTranslateX = toolsDockAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [18, 0],
@@ -2541,6 +3135,16 @@ export default function GraphCanvas() {
                   const highlightedOpacity = revealIndex !== undefined
                     ? Animated.multiply(revealOpacity, routeGlowOpacity)
                     : routeGlowOpacity;
+                  const segmentFillProgress = revealIndex !== undefined
+                    ? routeReveal.interpolate({
+                      inputRange: [revealIndex, revealIndex + 1],
+                      outputRange: [0, 1],
+                      extrapolate: 'clamp',
+                    })
+                    : 1;
+                  const fillWidth = revealIndex !== undefined
+                    ? Animated.multiply(segmentFillProgress, length)
+                    : length;
 
                   return (
                     <Animated.View
@@ -2554,6 +3158,18 @@ export default function GraphCanvas() {
                       ]}
                     >
                       <View style={[styles.edgeStroke, strokeStyle]} />
+                      <Animated.View
+                        style={[
+                          styles.edgeFlowFill,
+                          {
+                            top: strokeTop + Math.max(0, (strokeHeight - 0.2) / 2),
+                            height: Math.max(1, strokeHeight - 0.3),
+                            width: fillWidth,
+                            left: flowMatchesRenderDirection ? 0 : undefined,
+                            right: flowMatchesRenderDirection ? undefined : 0,
+                          },
+                        ]}
+                      />
                       {isRampEdge ? (
                         <View
                           style={[
@@ -2685,28 +3301,74 @@ export default function GraphCanvas() {
             const isDropTarget = dropPreviewSlotId === slot.id;
             const isExitOnly = slot.node.exitOnly;
             const isHoldFocused = holdFocusSlotId === slot.id;
+            const isExpandedLabel = expandedLabelSlotId === slot.id;
             const slotScreenX = worldToScreenX(slot.x, viewport);
             const slotScreenY = worldToScreenY(slot.y, viewport);
             const slotRadius = clamp(SLOT_RADIUS * viewport.scale, 8, 30);
             const labelLayout = labelLayoutById.get(slot.id);
             const labelPresentation = labelPresentationById.get(slot.id);
+            const expandedLabelPresentation = isExpandedLabel
+              ? getLabelPresentation(slot, editLayoutMode, true, true)
+              : null;
             const labelLeftLocal = labelLayout ? labelLayout.left - (slotScreenX - slotRadius) : 0;
             const labelTopLocal = labelLayout ? labelLayout.top - (slotScreenY - slotRadius) : 0;
             const labelRightLocal = labelLeftLocal + (labelPresentation?.width ?? 0);
             const labelBottomLocal = labelTopLocal + (labelPresentation?.height ?? 0);
+            let expandedLabelLeftLocal = 0;
+            let expandedLabelTopLocal = 0;
+            let expandedLabelRightLocal = 0;
+            let expandedLabelBottomLocal = 0;
+            if (expandedLabelPresentation) {
+              const maxExpandedLeft = Math.max(
+                LABEL_VIEWPORT_MARGIN,
+                viewportSize.width - expandedLabelPresentation.width - LABEL_VIEWPORT_MARGIN,
+              );
+              const maxExpandedTop = Math.max(
+                LABEL_VIEWPORT_MARGIN,
+                viewportSize.height - expandedLabelPresentation.height - LABEL_VIEWPORT_MARGIN,
+              );
+              const preferredTopBelow = slotScreenY + slotRadius + 7;
+              const preferredTopAbove = slotScreenY - slotRadius - expandedLabelPresentation.height - 5;
+              const belowTop = clamp(preferredTopBelow, LABEL_VIEWPORT_MARGIN, maxExpandedTop);
+              const aboveTop = clamp(preferredTopAbove, LABEL_VIEWPORT_MARGIN, maxExpandedTop);
+              const useAboveFirst = preferredTopBelow + expandedLabelPresentation.height > maxExpandedTop;
+              const defaultExpandedTop = useAboveFirst ? aboveTop : belowTop;
+              const defaultExpandedLeft = clamp(
+                slotScreenX - expandedLabelPresentation.width / 2,
+                LABEL_VIEWPORT_MARGIN,
+                maxExpandedLeft,
+              );
+
+              const expandedTop = (expandedLabelAnchor && expandedLabelAnchor.slotId === slot.id)
+                ? expandedLabelAnchor.top
+                : defaultExpandedTop;
+              const expandedLeft = (expandedLabelAnchor && expandedLabelAnchor.slotId === slot.id)
+                ? expandedLabelAnchor.left
+                : defaultExpandedLeft;
+
+              expandedLabelLeftLocal = expandedLeft - (slotScreenX - slotRadius);
+              expandedLabelTopLocal = expandedTop - (slotScreenY - slotRadius);
+              expandedLabelRightLocal = expandedLabelLeftLocal + expandedLabelPresentation.width;
+              expandedLabelBottomLocal = expandedLabelTopLocal + expandedLabelPresentation.height;
+            }
             const slotCenterX = slotRadius;
             const slotCenterY = slotRadius;
             let connectorLength = 0;
             let connectorLeft = 0;
             let connectorTop = 0;
             let connectorAngle = 0;
-            if (isHoldFocused && labelLayout && labelPresentation) {
-              const targetX = clamp(slotCenterX, labelLeftLocal, labelRightLocal);
-              const targetY = slotCenterY < labelTopLocal
-                ? labelTopLocal
-                : slotCenterY > labelBottomLocal
-                  ? labelBottomLocal
-                  : clamp(slotCenterY, labelTopLocal, labelBottomLocal);
+            const activeLabelLeft = expandedLabelPresentation ? expandedLabelLeftLocal : labelLeftLocal;
+            const activeLabelTop = expandedLabelPresentation ? expandedLabelTopLocal : labelTopLocal;
+            const activeLabelRight = expandedLabelPresentation ? expandedLabelRightLocal : labelRightLocal;
+            const activeLabelBottom = expandedLabelPresentation ? expandedLabelBottomLocal : labelBottomLocal;
+            const hasActiveLabel = expandedLabelPresentation || (labelLayout && labelPresentation);
+            if (isHoldFocused && hasActiveLabel) {
+              const targetX = clamp(slotCenterX, activeLabelLeft, activeLabelRight);
+              const targetY = slotCenterY < activeLabelTop
+                ? activeLabelTop
+                : slotCenterY > activeLabelBottom
+                  ? activeLabelBottom
+                  : clamp(slotCenterY, activeLabelTop, activeLabelBottom);
               const vx = targetX - slotCenterX;
               const vy = targetY - slotCenterY;
               const rawLength = Math.sqrt(vx * vx + vy * vy);
@@ -2743,7 +3405,19 @@ export default function GraphCanvas() {
                       },
                       { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
                       isExitOnly ? styles.slotExitOnly : null,
-                      highlighted ? styles.slotHighlighted : null,
+                      highlighted
+                        ? [
+                          styles.slotHighlighted,
+                          {
+                            borderColor: isExitOnly
+                              ? '#ffbe70'
+                              : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                            shadowColor: isExitOnly
+                              ? '#ffbe70'
+                              : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                          },
+                        ]
+                        : null,
                       isDropTarget ? styles.slotDropPreview : null,
                       isHoldFocused ? styles.slotHoldFocus : null,
                     ]}
@@ -2761,13 +3435,14 @@ export default function GraphCanvas() {
                     ]}
                   />
                 ) : null}
-                {labelLayout && labelPresentation ? (
+                {labelLayout && labelPresentation && !isExpandedLabel && !suppressedByExpandedLabelIds.has(slot.id) ? (
                   <Text
                     numberOfLines={labelPresentation.lines}
                     ellipsizeMode="tail"
                     style={[
                       styles.slotLabel,
                       highlighted ? styles.slotLabelOnHighlightedRoute : null,
+                      labelLayout.occludesHighlightedRoute ? styles.slotLabelRouteWindow : null,
                       isHoldFocused ? styles.slotLabelFocused : null,
                       {
                         width: labelPresentation.width,
@@ -2778,6 +3453,25 @@ export default function GraphCanvas() {
                     ]}
                   >
                     {labelPresentation.text}
+                  </Text>
+                ) : null}
+                {isExpandedLabel && expandedLabelPresentation ? (
+                  <Text
+                    ellipsizeMode="clip"
+                    style={[
+                      styles.slotLabel,
+                      highlighted ? styles.slotLabelOnHighlightedRoute : null,
+                      isHoldFocused ? styles.slotLabelFocused : null,
+                      styles.slotLabelExpandedOverlay,
+                      {
+                        width: expandedLabelPresentation.width,
+                        minHeight: expandedLabelPresentation.height,
+                        left: expandedLabelLeftLocal,
+                        top: expandedLabelTopLocal,
+                      },
+                    ]}
+                  >
+                    {expandedLabelPresentation.text}
                   </Text>
                 ) : null}
               </View>
@@ -3003,7 +3697,7 @@ export default function GraphCanvas() {
             style={[
               styles.focusHintBubble,
               {
-                top: 56 + topInset,
+                top: topControlsTop + 3,
                 opacity: focusHintOpacity,
                 transform: [{ translateX: focusHintTranslateX }],
               },
@@ -3026,6 +3720,21 @@ export default function GraphCanvas() {
                 onPress={() => setInfoTab('legend')}
               >
                 <Text style={[styles.infoTabText, infoTab === 'legend' ? styles.infoTabTextActive : null]}>Legend</Text>
+              </Pressable>
+              <Pressable
+                hitSlop={8}
+                style={[styles.infoPinButton, routeInfoPinned ? styles.infoPinButtonActive : null]}
+                onPress={() => {
+                  setRouteInfoPinned((previous) => !previous);
+                  triggerHaptic('light');
+                }}
+                accessibilityLabel={routeInfoPinned ? 'Info menu pinned' : 'Info menu auto-retract'}
+              >
+                <MaterialCommunityIcons
+                  name={routeInfoPinned ? 'pin' : 'pin-outline'}
+                  size={15}
+                  color={routeInfoPinned ? '#eef6ff' : '#c7d8ef'}
+                />
               </Pressable>
             </View>
 
@@ -3117,74 +3826,93 @@ export default function GraphCanvas() {
                 },
               ]}
             >
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [
-                  styles.toolsDockButton,
-                  endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
-                  pressed ? styles.dockButtonPressed : null,
-                ]}
-                disabled={endpoints.length !== 2}
-                onPress={() => runToolAction(swapEndpoints)}
-              >
-                <Text style={styles.toolsDockButtonText}>Swap</Text>
-              </Pressable>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                onPress={() => runToolAction(clearEndpoints)}
-              >
-                <Text style={styles.toolsDockButtonText}>Clear</Text>
-              </Pressable>
-              <Pressable
-                hitSlop={10}
-                style={({ pressed }) => [
-                  styles.toolsDockButton,
-                  toolsPinned ? styles.toolsDockButtonActive : null,
-                  pressed ? styles.dockButtonPressed : null,
-                ]}
-                onPress={() => {
-                  setToolsPinned((previous) => !previous);
-                  triggerHaptic('light');
-                }}
-                accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
-              >
-                <MaterialCommunityIcons
-                  name={toolsPinned ? 'pin' : 'pin-outline'}
-                  size={17}
-                  color={toolsPinned ? '#8ec5ff' : '#dce8fa'}
-                />
-              </Pressable>
-              {EDIT_LAYOUT_ENABLED ? (
+              <View style={styles.toolsDockActionsRow}>
                 <Pressable
                   hitSlop={10}
                   style={({ pressed }) => [
-                    styles.toolsDockButton,
-                    editLayoutMode ? styles.toolsDockButtonActive : null,
+                    styles.toolsDockIconButton,
+                    endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
                     pressed ? styles.dockButtonPressed : null,
                   ]}
-                  onPress={() => runToolAction(() => setEditLayoutMode((previous) => !previous))}
+                  disabled={endpoints.length !== 2}
+                  onPress={() => runToolAction(swapEndpoints)}
+                  accessibilityLabel="Swap endpoints"
                 >
-                  <Text style={styles.toolsDockButtonText}>{editLayoutMode ? 'Done' : 'Edit'}</Text>
+                  <MaterialCommunityIcons
+                    name="swap-horizontal"
+                    size={19}
+                    color={endpoints.length !== 2 ? '#8ea5c6' : '#cfe0f8'}
+                  />
                 </Pressable>
-              ) : null}
-              {EDIT_LAYOUT_ENABLED && editLayoutMode ? (
-                <>
+                <Pressable
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.toolsDockIconButton,
+                    endpoints.length === 0 ? styles.toolsDockButtonDisabled : null,
+                    pressed ? styles.dockButtonPressed : null,
+                  ]}
+                  disabled={endpoints.length === 0}
+                  onPress={() => runToolAction(clearEndpoints)}
+                  accessibilityLabel="Clear endpoints"
+                >
+                  <MaterialCommunityIcons
+                    name="restart"
+                    size={19}
+                    color={endpoints.length === 0 ? '#8ea5c6' : '#cfe0f8'}
+                  />
+                </Pressable>
+                <Pressable
+                  hitSlop={10}
+                  style={({ pressed }) => [
+                    styles.toolsDockIconButton,
+                    toolsPinned ? styles.toolsDockIconButtonActive : null,
+                    pressed ? styles.dockButtonPressed : null,
+                  ]}
+                  onPress={() => {
+                    setToolsPinned((previous) => !previous);
+                    triggerHaptic('light');
+                  }}
+                  accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
+                >
+                  <MaterialCommunityIcons
+                    name={toolsPinned ? 'pin' : 'pin-outline'}
+                    size={16}
+                    color={toolsPinned ? '#eef6ff' : '#c7d8ef'}
+                  />
+                </Pressable>
+              </View>
+              {EDIT_LAYOUT_ENABLED ? (
+                <View style={styles.toolsDockActionsRow}>
                   <Pressable
                     hitSlop={10}
-                    style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                    onPress={() => runToolAction(() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length))}
+                    style={({ pressed }) => [
+                      styles.toolsDockButton,
+                      editLayoutMode ? styles.toolsDockButtonActive : null,
+                      pressed ? styles.dockButtonPressed : null,
+                    ]}
+                    onPress={() => runToolAction(() => setEditLayoutMode((previous) => !previous))}
                   >
-                    <Text style={styles.toolsDockButtonText}>Grid {gridSize}</Text>
+                    <Text style={styles.toolsDockButtonText}>{editLayoutMode ? 'Done' : 'Edit'}</Text>
                   </Pressable>
-                  <Pressable
-                    hitSlop={10}
-                    style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                    onPress={() => runToolAction(() => setExportVisible(true))}
-                  >
-                    <Text style={styles.toolsDockButtonText}>Export</Text>
-                  </Pressable>
-                </>
+                  {editLayoutMode ? (
+                    <>
+                      <Pressable
+                        hitSlop={10}
+                        style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                        onPress={() => runToolAction(() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length))}
+                      >
+                        <Text style={styles.toolsDockButtonText}>Grid {gridSize}</Text>
+                      </Pressable>
+                      <Pressable
+                        hitSlop={10}
+                        style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
+                        onPress={() => runToolAction(() => setExportVisible(true))}
+                      >
+                        <Text style={styles.toolsDockButtonText}>Export</Text>
+                      </Pressable>
+                    </>
+                  ) : null}
+                </View>
               ) : null}
             </Animated.View>
             <Pressable
@@ -3199,8 +3927,13 @@ export default function GraphCanvas() {
                   return !previous;
                 });
               }}
+              accessibilityLabel={toolsDockOpen ? 'Close tools' : 'Open tools'}
             >
-              <Text style={styles.toolsMainButtonText}>{toolsDockOpen ? 'Close' : 'Tools'}</Text>
+              <MaterialCommunityIcons
+                name={toolsDockOpen ? 'close' : 'tools'}
+                size={21}
+                color="#dce8fa"
+              />
             </Pressable>
           </View>
         ) : null}
@@ -3320,6 +4053,11 @@ const styles = StyleSheet.create({
     left: 0,
     borderRadius: 6,
   },
+  edgeFlowFill: {
+    position: 'absolute',
+    borderRadius: 6,
+    backgroundColor: 'rgba(244, 251, 255, 0.56)',
+  },
   edgeRampRail: {
     position: 'absolute',
     left: 0,
@@ -3396,8 +4134,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#2f2415',
   },
   slotHighlighted: {
-    borderColor: '#ffffff',
-    backgroundColor: '#21395c',
+    borderWidth: 2.8,
+    shadowOpacity: 0.78,
+    shadowOffset: { width: 0, height: 0 },
+    shadowRadius: 14,
+    elevation: 7,
   },
   slotDropPreview: {
     borderColor: '#f6e05e',
@@ -3444,6 +4185,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowOffset: { width: 0, height: 1 },
     shadowRadius: 4,
+  },
+  slotLabelExpandedOverlay: {
+    zIndex: 4,
   },
   endpointWrap: {
     position: 'absolute',
@@ -3542,6 +4286,10 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(209, 228, 255, 0.28)',
     borderWidth: 1,
   },
+  slotLabelRouteWindow: {
+    backgroundColor: 'rgba(10, 20, 32, 0.3)',
+    borderColor: 'rgba(186, 213, 246, 0.26)',
+  },
   slotLabelFocused: {
     backgroundColor: 'rgba(20, 37, 58, 0.75)',
     borderColor: 'rgba(204, 225, 255, 0.78)',
@@ -3636,13 +4384,15 @@ const styles = StyleSheet.create({
   },
   focusHintBubble: {
     position: 'absolute',
-    right: 96,
+    right: 102,
     borderRadius: 10,
     backgroundColor: 'rgba(15, 24, 36, 0.96)',
     borderWidth: 1,
     borderColor: '#314d72',
     paddingHorizontal: 9,
-    paddingVertical: 6,
+    paddingVertical: 4,
+    minHeight: 32,
+    justifyContent: 'center',
   },
   focusHintText: {
     color: '#dce8fa',
@@ -3722,6 +4472,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#2a7af5',
     borderColor: '#5d9bff',
   },
+  infoPinButton: {
+    width: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  infoPinButtonActive: {
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
+  },
   infoTabText: {
     color: '#bcd0ee',
     fontSize: 11,
@@ -3782,58 +4545,92 @@ const styles = StyleSheet.create({
   toolsDockTray: {
     marginRight: 8,
     maxWidth: '78%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-    backgroundColor: 'rgba(16, 26, 38, 0.96)',
-    borderRadius: 16,
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 6,
+    backgroundColor: '#111d2d',
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#355176',
     paddingHorizontal: 8,
-    paddingVertical: 7,
+    paddingVertical: 8,
+  },
+  toolsDockHintStrip: {
+    minHeight: 28,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsDockHintStripText: {
+    color: '#bcd0ee',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  toolsDockActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    justifyContent: 'flex-start',
   },
   toolsDockButton: {
     paddingHorizontal: 10,
-    paddingVertical: 7,
-    borderRadius: 10,
-    backgroundColor: '#1d2c42',
+    paddingVertical: 6,
+    borderRadius: 9,
     borderWidth: 1,
-    borderColor: '#3b5a84',
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+  },
+  toolsDockIconButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsDockIconButtonActive: {
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
+  },
+  toolsDockIconWrap: {
+    width: TOOLS_DOCK_ICON_WRAP_SIZE,
+    height: TOOLS_DOCK_ICON_WRAP_SIZE,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   toolsDockButtonActive: {
     backgroundColor: '#2a7af5',
-    borderColor: '#5c99ff',
+    borderColor: '#5d9bff',
   },
   toolsDockButtonDisabled: {
     opacity: 0.45,
   },
   toolsDockButtonText: {
-    color: '#dce8fa',
-    fontSize: 12,
+    color: '#bcd0ee',
+    fontSize: 11,
     fontWeight: '700',
   },
   toolsMainButton: {
-    minWidth: 82,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderTopLeftRadius: 16,
-    borderBottomLeftRadius: 16,
-    borderTopRightRadius: 18,
-    borderBottomRightRadius: 18,
-    backgroundColor: '#1a2537',
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#162338',
     borderWidth: 1,
-    borderColor: '#324b6e',
+    borderColor: '#355176',
+    justifyContent: 'center',
     alignItems: 'center',
   },
   toolsMainButtonActive: {
-    backgroundColor: '#244f8a',
-    borderColor: '#5a9dff',
-  },
-  toolsMainButtonText: {
-    color: '#dce8fa',
-    fontSize: 12,
-    fontWeight: '700',
+    backgroundColor: '#2a7af5',
+    borderColor: '#5d9bff',
   },
   debugPill: {
     position: 'absolute',
