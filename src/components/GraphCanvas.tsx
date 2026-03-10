@@ -2950,7 +2950,7 @@ export default function GraphCanvas() {
     : activeToolHoldAction === 'clear'
       ? 'Holding to clear endpoints'
       : toolsHintVisible
-        ? 'Swap/Clear: hold to confirm. Pin keeps tools open.'
+        ? 'Hold swap/clear to confirm'
         : 'Hold swap/clear to confirm';
   const toolsHintStripVisible = toolsHintVisible || activeToolHoldAction !== null;
   const toolsDockTranslateX = toolsDockAnim.interpolate({
@@ -4605,6 +4605,7 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
   },
   toolsDockHintStrip: {
+    width: TOOLS_HOLD_PROGRESS_WIDTH + 16,
     minHeight: 34,
     borderRadius: 10,
     borderWidth: 1,
@@ -4613,6 +4614,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     justifyContent: 'center',
+    alignSelf: 'center',
   },
   toolsDockHintStripText: {
     color: '#a9bfdc',
@@ -4648,6 +4650,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 8,
+    justifyContent: 'center',
+    alignSelf: 'center',
   },
   toolsDockButton: {
     paddingHorizontal: 10,
