@@ -1,0 +1,11 @@
+{
+  "sectionColors": {},
+  "edgeSections": {},
+  "nodeCategoryColors": {
+    "building": "#3f96ff",
+    "junction": "#20b36f",
+    "intersection": "#f2a33a",
+    "stairs": "#db5b5b",
+    "exterior": "#706cff"
+  }
+}

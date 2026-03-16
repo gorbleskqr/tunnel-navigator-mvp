@@ -1,6 +1,16 @@
 import { Size, Viewport, WorldBounds } from '../types/types';
 
-export function clampViewport(viewport: Viewport, bounds: WorldBounds, size: Size): Viewport {
+interface ClampViewportOptions {
+  edgeSlackX?: number;
+  edgeSlackY?: number;
+}
+
+export function clampViewport(
+  viewport: Viewport,
+  bounds: WorldBounds,
+  size: Size,
+  options?: ClampViewportOptions,
+): Viewport {
   if (size.width <= 0 || size.height <= 0) {
     return viewport;
   }
@@ -8,8 +18,10 @@ export function clampViewport(viewport: Viewport, bounds: WorldBounds, size: Siz
   const scaledWidth = bounds.width * viewport.scale;
   const scaledHeight = bounds.height * viewport.scale;
   // Allow edge whitespace so panning feels less rigid, with extra vertical headroom on mobile.
-  const edgeSlackX = Math.max(14, Math.min(32, Math.min(size.width, size.height) * 0.045));
-  const edgeSlackY = Math.max(edgeSlackX + 14, Math.min(58, size.height * 0.1));
+  const fallbackEdgeSlackX = Math.max(14, Math.min(32, Math.min(size.width, size.height) * 0.045));
+  const fallbackEdgeSlackY = Math.max(fallbackEdgeSlackX + 14, Math.min(58, size.height * 0.1));
+  const edgeSlackX = options?.edgeSlackX ?? fallbackEdgeSlackX;
+  const edgeSlackY = options?.edgeSlackY ?? fallbackEdgeSlackY;
 
   let tx: number;
   let ty: number;

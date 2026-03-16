@@ -57,6 +57,18 @@ export interface GraphLayout {
   };
 }
 
+export interface ThemeConfig {
+  sectionColors?: Record<string, string>;
+  edgeSections?: Record<string, string>;
+  nodeCategoryColors?: Partial<Record<NodeType, string>>;
+}
+
+export interface ResolvedThemeConfig {
+  sectionColors: Record<string, string>;
+  edgeSections: Record<string, string>;
+  nodeCategoryColors: Record<NodeType, string>;
+}
+
 export interface Graph {
   nodes: GraphNode[];
   edges: Edge[];
