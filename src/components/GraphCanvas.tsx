@@ -3,14 +3,17 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
+  Keyboard,
   Modal,
   Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Text,
+  TextInput,
   useWindowDimensions,
   View,
   type GestureResponderEvent,
@@ -18,7 +21,7 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 
-import { buildAdjacencyList, graph, graphLayout } from '../engine/graph';
+import { buildAdjacencyList, graph, graphLayout, resolvedThemeConfig } from '../engine/graph';
 import {
   clamp,
   clampViewport,
@@ -37,7 +40,18 @@ import {
   getZoomLimits,
 } from '../services/layoutService';
 import { getRoutes } from '../services/routeService';
-import { Edge, EdgeBendMode, Endpoint, Route, Size, Slot, Viewport } from '../types/types';
+import {
+  Edge,
+  EdgeBendMode,
+  Endpoint,
+  NodeType,
+  ResolvedThemeConfig,
+  Route,
+  Size,
+  Slot,
+  Viewport,
+  WorldBounds,
+} from '../types/types';
 
 const SLOT_RADIUS = 18;
 const ENDPOINT_RADIUS = 24;
@@ -46,7 +60,7 @@ const DRAG_RADIUS_PX = 28;
 const SNAP_RADIUS_PX = 36;
 const TAP_MOVE_THRESHOLD = 8;
 const DEFAULT_CENTER_SLOT_ID = 'nicol_building';
-const GRID_SIZE_OPTIONS = [40, 80, 120] as const;
+const GRID_SIZE = 80;
 const LABEL_BASE_WIDTH = 124;
 const LABEL_COMPACT_WIDTH = 96;
 const LABEL_JUNCTION_WIDTH = 148;
@@ -66,6 +80,8 @@ const LABEL_MEDIUM_ZOOM_PROGRESS_THRESHOLD = 0.5;
 const LABEL_FULL_TEXT_PROGRESS_THRESHOLD = 0.84;
 const LABEL_JUNCTION_CLUSTER_FULL_TEXT_PROGRESS_THRESHOLD = 0.72;
 const HOLD_TO_DELETE_MS = 320;
+const EDGE_ANCHOR_HOLD_MS = 220;
+const MAX_EDGE_ANCHORS_PER_EDGE = 3;
 const ENDPOINT_INDICATOR_MARGIN = 26;
 const ENDPOINT_INDICATOR_CLEARANCE = 54;
 const ENDPOINT_INDICATOR_STEP = 26;
@@ -87,17 +103,11 @@ const TOOLS_CENTER_HOLD_WRAP_SIZE = 112;
 const TOOL_ACTION_HOLD_MS = 820;
 const TOOLS_DOCK_AUTO_HIDE_MS = 2200;
 const ROUTE_INFO_AUTO_HIDE_MS = 2600;
+const TOOLS_MAIN_BUTTON_SIZE = 38;
+const EDGE_WEIGHT_FULL_MIN_ZOOM_PROGRESS = 0.56;
 // Keep layout editing local via .env.local so production builds stay read-only.
 const EDIT_LAYOUT_ENABLED = process.env.EXPO_PUBLIC_ENABLE_LAYOUT_EDIT === '1';
 const DEBUG_UI_ENABLED = __DEV__ && process.env.EXPO_PUBLIC_DEBUG_UI === '1';
-
-const NODE_TYPE_COLORS: Record<string, string> = {
-  building: '#3f96ff',
-  junction: '#20b36f',
-  intersection: '#f2a33a',
-  stairs: '#db5b5b',
-  exterior: '#706cff',
-};
 
 const EDGE_TYPE_COLORS: Record<string, string> = {
   flat: '#4a627f',
@@ -107,6 +117,18 @@ const EDGE_TYPE_COLORS: Record<string, string> = {
 
 const ROUTE_COLORS = ['#7fc7ff', '#8de4b8', '#ffd27a', '#ff9fab', '#b8b2ff', '#7ee7e1'] as const;
 const SHARED_ROUTE_COLOR = '#f2f6ff';
+const SECTION_IDS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
+const DEFAULT_SECTION_COLOR = '#808080';
+const NODE_CATEGORY_ITEMS: Array<{ id: NodeType; label: string }> = [
+  { id: 'building', label: 'Building' },
+  { id: 'junction', label: 'Junction' },
+  { id: 'intersection', label: 'Intersection' },
+  { id: 'stairs', label: 'Stairs' },
+  { id: 'exterior', label: 'Exterior' },
+];
+
+type SectionDrawRejectionKind = 'adjacent' | 'loop' | 'occupied' | 'disconnect';
+type EdgeAnchorDragMode = 'insert' | 'move';
 
 type InteractionState =
   | { kind: 'idle' }
@@ -124,6 +146,40 @@ type InteractionState =
   | {
     kind: 'slot-drag';
     slotId: string;
+  }
+  | {
+    kind: 'edge-anchor-drag';
+    edgeIndex: number;
+    mode: EdgeAnchorDragMode;
+    insertWaypointIndex: number | null;
+    waypointIndex: number | null;
+    originWorldX: number;
+    originWorldY: number;
+    originSnappedX: number | null;
+    originSnappedY: number | null;
+    worldX: number;
+    worldY: number;
+    snappedX: number | null;
+    snappedY: number | null;
+  }
+  | {
+    kind: 'section-draw';
+    sectionId: string;
+    pathSlotIds: string[];
+    pathEdgeKeys: string[];
+    changedEdgePrevious: Record<string, string | null>;
+    lastRejectedEdgeKey: string | null;
+    lastRejectedKind: SectionDrawRejectionKind | null;
+  }
+  | {
+    kind: 'section-endpoint-drag';
+    sectionId: string;
+    pathSlotIds: string[];
+    pathEdgeKeys: string[];
+    changedEdgePrevious: Record<string, string | null>;
+    lastRejectedEdgeKey: string | null;
+    lastRejectedKind: SectionDrawRejectionKind | null;
+    snappedToSlot: boolean;
   }
   | {
     kind: 'endpoint-drag';
@@ -160,11 +216,36 @@ interface DeletePromptState {
   y: number;
 }
 
+interface DraggingEdgeAnchorState {
+  edgeIndex: number;
+  mode: EdgeAnchorDragMode;
+  insertWaypointIndex: number | null;
+  waypointIndex: number | null;
+  worldX: number;
+  worldY: number;
+  snappedX: number | null;
+  snappedY: number | null;
+}
+
 interface EdgeSegment {
   x1: number;
   y1: number;
   x2: number;
   y2: number;
+}
+
+interface EdgeHitDetails {
+  edgeIndex: number;
+  segmentIndex: number;
+  projectedX: number;
+  projectedY: number;
+  distance: number;
+}
+
+interface EdgeAnchorHitDetails {
+  edgeIndex: number;
+  waypointIndex: number;
+  distance: number;
 }
 
 interface LabelCandidate {
@@ -221,8 +302,31 @@ interface EndpointIndicator {
   angle: number;
 }
 
+interface SectionEndpointHandle {
+  id: string;
+  sectionId: string;
+  slotId: string;
+  neighborSlotId: string;
+  kind: 'terminal' | 'branch';
+}
+
 type InfoTab = 'route' | 'legend';
 type HoldToolAction = 'swap' | 'clear';
+type EdgeWeightOverlayMode = 'hidden' | 'compact' | 'full';
+
+function getWeightOverlayModeLabel(mode: EdgeWeightOverlayMode): string {
+  if (mode === 'hidden') {
+    return 'Off';
+  }
+  if (mode === 'compact') {
+    return 'Compact';
+  }
+  return 'Full';
+}
+
+function getEdgeShapingModeLabel(enabled: boolean): string {
+  return enabled ? 'Shaping On' : 'Shaping Off';
+}
 
 function approxEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < 0.0001;
@@ -236,7 +340,11 @@ function getEdgeBendMode(edge: Edge): EdgeBendMode {
   return edge.render?.bend === 'vh' ? 'vh' : 'hv';
 }
 
-function getEdgeSegments(edge: Edge, slotById: Map<string, Slot>): EdgeSegment[] {
+function getEdgeBendLabel(mode: EdgeBendMode): string {
+  return mode === 'vh' ? 'Vertical then Horizontal' : 'Horizontal then Vertical';
+}
+
+function getEdgePathPoints(edge: Edge, slotById: Map<string, Slot>): Array<{ x: number; y: number }> {
   const from = slotById.get(edge.from);
   const to = slotById.get(edge.to);
 
@@ -248,7 +356,7 @@ function getEdgeSegments(edge: Edge, slotById: Map<string, Slot>): EdgeSegment[]
   const waypoints = edge.render?.waypoints ?? [];
 
   if (mode === 'straight') {
-    return [{ x1: from.x, y1: from.y, x2: to.x, y2: to.y }];
+    return [{ x: from.x, y: from.y }, { x: to.x, y: to.y }];
   }
 
   const points: Array<{ x: number; y: number }> = [{ x: from.x, y: from.y }];
@@ -263,6 +371,15 @@ function getEdgeSegments(edge: Edge, slotById: Map<string, Slot>): EdgeSegment[]
     );
   }
   points.push({ x: to.x, y: to.y });
+
+  return points;
+}
+
+function getEdgeSegments(edge: Edge, slotById: Map<string, Slot>): EdgeSegment[] {
+  const points = getEdgePathPoints(edge, slotById);
+  if (points.length < 2) {
+    return [];
+  }
 
   const segments: EdgeSegment[] = [];
   for (let i = 0; i < points.length - 1; i += 1) {
@@ -283,11 +400,101 @@ function getEdgeSegments(edge: Edge, slotById: Map<string, Slot>): EdgeSegment[]
   return segments;
 }
 
-function distanceToSegment(
+function edgeCanShowOrthogonalDifference(edge: Edge, slotById: Map<string, Slot>): boolean {
+  if ((edge.render?.waypoints?.length ?? 0) > 0) {
+    return true;
+  }
+
+  const from = slotById.get(edge.from);
+  const to = slotById.get(edge.to);
+  if (!from || !to) {
+    return false;
+  }
+
+  return !approxEqual(from.x, to.x) && !approxEqual(from.y, to.y);
+}
+
+function getEdgeMidpointWorld(
+  edge: Edge,
+  slotById: Map<string, Slot>,
+): { x: number; y: number; pathLength: number } | null {
+  const segments = getEdgeSegments(edge, slotById);
+  if (segments.length === 0) {
+    return null;
+  }
+
+  const segmentLengths = segments.map((segment) => {
+    return Math.sqrt(((segment.x2 - segment.x1) ** 2) + ((segment.y2 - segment.y1) ** 2));
+  });
+  const totalLength = segmentLengths.reduce((sum, value) => sum + value, 0);
+  if (totalLength <= 0.0001) {
+    return null;
+  }
+
+  const targetDistance = totalLength / 2;
+  let walked = 0;
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i];
+    const length = segmentLengths[i];
+    if (walked + length >= targetDistance) {
+      const local = length <= 0.0001 ? 0 : (targetDistance - walked) / length;
+      return {
+        x: segment.x1 + (segment.x2 - segment.x1) * local,
+        y: segment.y1 + (segment.y2 - segment.y1) * local,
+        pathLength: totalLength,
+      };
+    }
+    walked += length;
+  }
+
+  const last = segments[segments.length - 1];
+  return {
+    x: last.x2,
+    y: last.y2,
+    pathLength: totalLength,
+  };
+}
+
+function sortWaypointsAlongEdgeAxis(
+  waypoints: Array<{ x: number; y: number }>,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): Array<{ x: number; y: number }> {
+  if (waypoints.length <= 1) {
+    return [...waypoints];
+  }
+
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const axisLengthSquared = (dx * dx) + (dy * dy);
+  if (axisLengthSquared <= 0.0001) {
+    return [...waypoints];
+  }
+
+  return waypoints
+    .map((waypoint, index) => {
+      const projection = ((waypoint.x - from.x) * dx + (waypoint.y - from.y) * dy) / axisLengthSquared;
+      return { waypoint, index, projection };
+    })
+    .sort((a, b) => {
+      if (!approxEqual(a.projection, b.projection)) {
+        return a.projection - b.projection;
+      }
+      return a.index - b.index;
+    })
+    .map((item) => item.waypoint);
+}
+
+function projectPointToSegment(
   pointX: number,
   pointY: number,
   segment: EdgeSegment,
-): number {
+): {
+  x: number;
+  y: number;
+  distance: number;
+  t: number;
+} {
   const ax = segment.x1;
   const ay = segment.y1;
   const bx = segment.x2;
@@ -297,13 +504,82 @@ function distanceToSegment(
   const lengthSq = abx * abx + aby * aby;
 
   if (lengthSq <= 0.000001) {
-    return distance(pointX, pointY, ax, ay);
+    return {
+      x: ax,
+      y: ay,
+      distance: distance(pointX, pointY, ax, ay),
+      t: 0,
+    };
   }
 
   const t = clamp(((pointX - ax) * abx + (pointY - ay) * aby) / lengthSq, 0, 1);
   const projX = ax + t * abx;
   const projY = ay + t * aby;
-  return distance(pointX, pointY, projX, projY);
+  return {
+    x: projX,
+    y: projY,
+    distance: distance(pointX, pointY, projX, projY),
+    t,
+  };
+}
+
+function isRedundantWaypoint(
+  previous: { x: number; y: number },
+  current: { x: number; y: number },
+  next: { x: number; y: number },
+): boolean {
+  if (
+    (approxEqual(current.x, previous.x) && approxEqual(current.y, previous.y))
+    || (approxEqual(current.x, next.x) && approxEqual(current.y, next.y))
+  ) {
+    return true;
+  }
+
+  const projection = projectPointToSegment(current.x, current.y, {
+    x1: previous.x,
+    y1: previous.y,
+    x2: next.x,
+    y2: next.y,
+  });
+
+  return (
+    projection.distance <= 0.75
+    && projection.t > 0.0001
+    && projection.t < 0.9999
+  );
+}
+
+function normalizeEdgeWaypoints(
+  waypoints: Array<{ x: number; y: number }>,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): Array<{ x: number; y: number }> {
+  if (waypoints.length === 0) {
+    return [...waypoints];
+  }
+
+  let result = [...waypoints];
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    const nextResult: Array<{ x: number; y: number }> = [];
+    for (let index = 0; index < result.length; index += 1) {
+      const previous = index === 0 ? from : result[index - 1];
+      const current = result[index];
+      const next = index === result.length - 1 ? to : result[index + 1];
+
+      if (isRedundantWaypoint(previous, current, next)) {
+        changed = true;
+        continue;
+      }
+
+      nextResult.push(current);
+    }
+    result = nextResult;
+  }
+
+  return result;
 }
 
 function midpoint(a: TouchPoint, b: TouchPoint): { x: number; y: number } {
@@ -618,16 +894,30 @@ function getJunctionCompactLabel(aliasLabels: string[]): string {
 function getLabelPresentation(
   slot: Slot,
   editLayoutMode: boolean,
+  showEditCoords: boolean,
   emphasized: boolean,
   highZoomExpanded: boolean,
 ): LabelPresentation | null {
-  if (editLayoutMode) {
-    return {
-      text: `${slot.node.label}\n${Math.round(slot.x)}, ${Math.round(slot.y)}`,
-      lines: 3,
-      width: LABEL_BASE_WIDTH,
-      height: LABEL_LINE_HEIGHT * 3 + LABEL_VERTICAL_PADDING * 2,
-    };
+  if (editLayoutMode && showEditCoords) {
+    const labelText = showEditCoords
+      ? `${slot.node.label}\n${Math.round(slot.x)}, ${Math.round(slot.y)}`
+      : slot.node.label;
+
+    if (!emphasized) {
+      return buildLabelPresentation(labelText, {
+        minWidth: LABEL_MIN_WIDTH,
+        maxWidth: showEditCoords ? (LABEL_COMPACT_WIDTH + 28) : LABEL_COMPACT_WIDTH,
+        maxLines: showEditCoords ? 2 : 1,
+        widthBuffer: 6,
+      });
+    }
+
+    return buildLabelPresentation(labelText, {
+      minWidth: 76,
+      maxWidth: highZoomExpanded ? (LABEL_BASE_WIDTH + 170) : (LABEL_BASE_WIDTH + 110),
+      maxLines: showEditCoords ? (highZoomExpanded ? 8 : 5) : (highZoomExpanded ? 9 : 6),
+      widthBuffer: highZoomExpanded ? 18 : 12,
+    });
   }
 
   if (slot.node.type === 'intersection') {
@@ -715,10 +1005,83 @@ function getStairStepOffsets(length: number): number[] {
   return Array.from({ length: stepCount }, (_, index) => spacing * (index + 1));
 }
 
+function buildGridAlignedBounds(
+  minX: number,
+  maxX: number,
+  minY: number,
+  maxY: number,
+  gridSize: number,
+): {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  width: number;
+  height: number;
+} {
+  const alignedMinX = Math.floor(minX / gridSize) * gridSize;
+  const alignedMaxX = Math.ceil(maxX / gridSize) * gridSize;
+  const alignedMinY = Math.floor(minY / gridSize) * gridSize;
+  const alignedMaxY = Math.ceil(maxY / gridSize) * gridSize;
+  const resolvedMaxX = alignedMaxX > alignedMinX ? alignedMaxX : (alignedMinX + gridSize);
+  const resolvedMaxY = alignedMaxY > alignedMinY ? alignedMaxY : (alignedMinY + gridSize);
+  return {
+    minX: alignedMinX,
+    maxX: resolvedMaxX,
+    minY: alignedMinY,
+    maxY: resolvedMaxY,
+    width: Math.max(1, resolvedMaxX - alignedMinX),
+    height: Math.max(1, resolvedMaxY - alignedMinY),
+  };
+}
+
+function isHexColor(value: string): boolean {
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value);
+}
+
+function normalizeHexInput(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed.length === 0) {
+    return '';
+  }
+
+  return trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+}
+
+function sanitizeHexDraftInput(input: string): string {
+  const compact = input.replace(/\s+/g, '');
+  if (compact.length === 0) {
+    return '';
+  }
+
+  const hasHashPrefix = compact.startsWith('#');
+  const raw = hasHashPrefix ? compact.slice(1) : compact;
+  const hexOnly = raw.replace(/[^0-9a-fA-F]/g, '').slice(0, 6).toUpperCase();
+  return hasHashPrefix ? `#${hexOnly}` : hexOnly;
+}
+
+function buildInitialThemeDraft(): ResolvedThemeConfig {
+  const sectionColors: Record<string, string> = {};
+  for (const sectionId of SECTION_IDS) {
+    const configured = resolvedThemeConfig.sectionColors[sectionId];
+    sectionColors[sectionId] = isHexColor(configured) ? configured : DEFAULT_SECTION_COLOR;
+  }
+
+  return {
+    sectionColors,
+    edgeSections: { ...resolvedThemeConfig.edgeSections },
+    nodeCategoryColors: { ...resolvedThemeConfig.nodeCategoryColors },
+  };
+}
+
 export default function GraphCanvas() {
   const windowSize = useWindowDimensions();
   const topInset = Platform.OS === 'android' ? (StatusBar.currentHeight ?? 0) : 0;
   const bottomInset = Platform.OS === 'android' ? 44 : 0;
+  const initialThemeDraftRef = useRef<ResolvedThemeConfig | null>(null);
+  if (!initialThemeDraftRef.current) {
+    initialThemeDraftRef.current = buildInitialThemeDraft();
+  }
   const [slots, setSlots] = useState<Slot[]>(() => buildSlotsFromGraph(graph, graphLayout));
   const [edges, setEdges] = useState<Edge[]>(() => graph.edges.map((edge) => ({ ...edge })));
   const [endpoints, setEndpoints] = useState<Endpoint[]>([]);
@@ -727,11 +1090,17 @@ export default function GraphCanvas() {
   const [edgeEditorIndex, setEdgeEditorIndex] = useState<number | null>(null);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [draggingEndpoint, setDraggingEndpoint] = useState<DraggingEndpointState | null>(null);
+  const [draggingEdgeAnchor, setDraggingEdgeAnchor] = useState<DraggingEdgeAnchorState | null>(null);
   const [slotTapPulse, setSlotTapPulse] = useState<TapPulseState | null>(null);
   const [screenTapPulse, setScreenTapPulse] = useState<TapPulseState | null>(null);
   const [toolsDockOpen, setToolsDockOpen] = useState(false);
+  const [toolsTrayHeight, setToolsTrayHeight] = useState(0);
+  const [displayToolsTrayHeight, setDisplayToolsTrayHeight] = useState(0);
   const [toolsPinned, setToolsPinned] = useState(false);
+  const [restorePinnedToolsAfterEdgeTray, setRestorePinnedToolsAfterEdgeTray] = useState(false);
   const [activeToolHoldAction, setActiveToolHoldAction] = useState<HoldToolAction | null>(null);
+  const [devHexInputFocused, setDevHexInputFocused] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [routeInfoOpen, setRouteInfoOpen] = useState(false);
   const [routeInfoPinned, setRouteInfoPinned] = useState(false);
   const [infoTab, setInfoTab] = useState<InfoTab>('route');
@@ -743,7 +1112,32 @@ export default function GraphCanvas() {
   const [focusHintVisible, setFocusHintVisible] = useState(false);
   const [viewportSize, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [viewport, setViewport] = useState<Viewport>({ scale: 1, tx: 0, ty: 0 });
-  const [gridSizeIndex, setGridSizeIndex] = useState(1);
+  const [showEditCoords, setShowEditCoords] = useState(false);
+  const [weightOverlayMode, setWeightOverlayMode] = useState<EdgeWeightOverlayMode>('hidden');
+  const [edgeShapingMode, setEdgeShapingMode] = useState(false);
+  const [editWorkspaceBounds, setEditWorkspaceBounds] = useState<WorldBounds | null>(null);
+  const [themeDraft, setThemeDraft] = useState<ResolvedThemeConfig>(initialThemeDraftRef.current as ResolvedThemeConfig);
+  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
+  const [editConfigTab, setEditConfigTab] = useState<'sections' | 'categories'>('sections');
+  const [sectionDraftEdgeKeys, setSectionDraftEdgeKeys] = useState<string[]>([]);
+  const [sectionColorInputs, setSectionColorInputs] = useState<Record<string, string>>(() => {
+    const draft = initialThemeDraftRef.current as ResolvedThemeConfig;
+    const inputs: Record<string, string> = {};
+    for (const sectionId of SECTION_IDS) {
+      inputs[sectionId] = draft.sectionColors[sectionId] ?? DEFAULT_SECTION_COLOR;
+    }
+    return inputs;
+  });
+  const [nodeCategoryColorInputs, setNodeCategoryColorInputs] = useState<Record<NodeType, string>>(() => {
+    const draft = (initialThemeDraftRef.current as ResolvedThemeConfig).nodeCategoryColors;
+    return {
+      building: draft.building,
+      junction: draft.junction,
+      intersection: draft.intersection,
+      stairs: draft.stairs,
+      exterior: draft.exterior,
+    };
+  });
   const defaultCenterSlotId = graphLayout.view?.defaultCenterSlotId ?? DEFAULT_CENTER_SLOT_ID;
 
   const initializedRef = useRef(false);
@@ -751,11 +1145,16 @@ export default function GraphCanvas() {
   const blockedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const slotsRef = useRef(slots);
+  const edgesRef = useRef(edges);
   const endpointsRef = useRef(endpoints);
   const viewportRef = useRef(viewport);
   const viewportSizeRef = useRef(viewportSize);
+  const editWorkspaceBoundsRef = useRef<WorldBounds | null>(editWorkspaceBounds);
+  const themeDraftRef = useRef(themeDraft);
   const draggingEndpointRef = useRef<DraggingEndpointState | null>(draggingEndpoint);
+  const draggingEdgeAnchorRef = useRef<DraggingEdgeAnchorState | null>(draggingEdgeAnchor);
   const editLayoutRef = useRef(editLayoutMode);
+  const toolsPinnedRef = useRef(toolsPinned);
 
   const shakeX = useRef(new Animated.Value(0)).current;
   const introAnim = useRef(new Animated.Value(0)).current;
@@ -775,18 +1174,27 @@ export default function GraphCanvas() {
   const holdFocusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const labelHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const endpointHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const edgeAnchorHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deletePromptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolsAutoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeToolHoldActionRef = useRef<HoldToolAction | null>(null);
   const routeInfoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sectionColorInputRefs = useRef<Record<string, TextInput | null>>({});
+  const nodeCategoryInputRefs = useRef<Partial<Record<NodeType, TextInput | null>>>({});
+  const sectionEndpointHandlesRef = useRef<SectionEndpointHandle[]>([]);
 
   slotsRef.current = slots;
+  edgesRef.current = edges;
   endpointsRef.current = endpoints;
   viewportRef.current = viewport;
   viewportSizeRef.current = viewportSize;
+  editWorkspaceBoundsRef.current = editWorkspaceBounds;
+  themeDraftRef.current = themeDraft;
   draggingEndpointRef.current = draggingEndpoint;
+  draggingEdgeAnchorRef.current = draggingEdgeAnchor;
   editLayoutRef.current = editLayoutMode;
+  toolsPinnedRef.current = toolsPinned;
 
   const triggerHaptic = (kind: 'light' | 'success' | 'warning'): void => {
     if (Platform.OS === 'web') {
@@ -991,6 +1399,13 @@ export default function GraphCanvas() {
     }
   };
 
+  const clearEdgeAnchorHoldTimer = (): void => {
+    if (edgeAnchorHoldTimerRef.current) {
+      clearTimeout(edgeAnchorHoldTimerRef.current);
+      edgeAnchorHoldTimerRef.current = null;
+    }
+  };
+
   const clearRouteInfoAutoHideTimer = (): void => {
     if (routeInfoTimerRef.current) {
       clearTimeout(routeInfoTimerRef.current);
@@ -1188,20 +1603,104 @@ export default function GraphCanvas() {
     }];
   };
 
-  const bounds = useMemo(() => getWorldBounds(slots, WORLD_BOUNDS_PADDING), [slots]);
-  const zoomLimits = useMemo(() => getZoomLimits(slots, viewportSize, bounds), [slots, viewportSize, bounds]);
-  const gridSize = GRID_SIZE_OPTIONS[gridSizeIndex] ?? GRID_SIZE_OPTIONS[1];
-  const gridMargin = gridSize * 2;
+  const displayBounds = useMemo(() => getWorldBounds(slots, WORLD_BOUNDS_PADDING), [slots]);
+  const gridSize = GRID_SIZE;
+  const defaultEditWorkspaceBounds = useMemo(() => {
+    return {
+      minX: displayBounds.minX,
+      maxX: displayBounds.maxX,
+      minY: displayBounds.minY,
+      maxY: displayBounds.maxY,
+      width: displayBounds.width,
+      height: displayBounds.height,
+    };
+  }, [displayBounds.height, displayBounds.maxX, displayBounds.maxY, displayBounds.minX, displayBounds.minY, displayBounds.width]);
+  const activeEditBounds = editWorkspaceBounds ?? defaultEditWorkspaceBounds;
+  const activeBounds = editLayoutMode ? activeEditBounds : displayBounds;
+  const zoomLimits = useMemo(() => getZoomLimits(slots, viewportSize, activeBounds), [slots, viewportSize, activeBounds]);
+  const viewportClampOptions = undefined;
+  const nodeTypeColorsForRender = themeDraft.nodeCategoryColors;
+  const sectionDraftEdgeKeySet = useMemo(() => new Set(sectionDraftEdgeKeys), [sectionDraftEdgeKeys]);
+  const sectionsWithPathData = useMemo(() => {
+    const sectionIds = new Set<string>();
+    for (const sectionId of Object.values(themeDraft.edgeSections)) {
+      const normalized = sectionId.trim().toUpperCase();
+      if (normalized.length > 0) {
+        sectionIds.add(normalized);
+      }
+    }
+    return sectionIds;
+  }, [themeDraft.edgeSections]);
 
   const slotById = useMemo(() => {
     return new Map(slots.map((slot) => [slot.id, slot]));
   }, [slots]);
+
+  const sectionAdjacencyBySection = useMemo(() => {
+    const bySection = new Map<string, Map<string, Set<string>>>();
+    for (const edge of edges) {
+      const key = edgeKey(edge.from, edge.to);
+      const sectionIdRaw = themeDraft.edgeSections[key];
+      const sectionId = sectionIdRaw?.trim().toUpperCase() ?? '';
+      if (!sectionId) {
+        continue;
+      }
+
+      const sectionAdjacency = bySection.get(sectionId) ?? new Map<string, Set<string>>();
+      const fromNeighbors = sectionAdjacency.get(edge.from) ?? new Set<string>();
+      fromNeighbors.add(edge.to);
+      sectionAdjacency.set(edge.from, fromNeighbors);
+
+      const toNeighbors = sectionAdjacency.get(edge.to) ?? new Set<string>();
+      toNeighbors.add(edge.from);
+      sectionAdjacency.set(edge.to, toNeighbors);
+
+      bySection.set(sectionId, sectionAdjacency);
+    }
+    return bySection;
+  }, [edges, themeDraft.edgeSections]);
+
+  const sectionEndpointHandles = useMemo<SectionEndpointHandle[]>(() => {
+    const handles: SectionEndpointHandle[] = [];
+    for (const [sectionId, sectionAdjacency] of sectionAdjacencyBySection.entries()) {
+      for (const [slotId, neighbors] of sectionAdjacency.entries()) {
+        if (neighbors.size === 1) {
+          const neighborSlotId = Array.from(neighbors)[0];
+          handles.push({
+            id: `${sectionId}:${slotId}:${neighborSlotId}`,
+            sectionId,
+            slotId,
+            neighborSlotId,
+            kind: 'terminal',
+          });
+          continue;
+        }
+
+      }
+    }
+    return handles;
+  }, [sectionAdjacencyBySection]);
+  sectionEndpointHandlesRef.current = sectionEndpointHandles;
 
   const adjacency = useMemo(() => {
     return buildAdjacencyList({
       nodes: graph.nodes,
       edges,
     });
+  }, [edges]);
+  const edgeTypeByKey = useMemo(() => {
+    const byKey = new Map<string, Edge['type']>();
+    for (const edge of edges) {
+      byKey.set(edgeKey(edge.from, edge.to), edge.type);
+    }
+    return byKey;
+  }, [edges]);
+  const edgeByKey = useMemo(() => {
+    const byKey = new Map<string, Edge>();
+    for (const edge of edges) {
+      byKey.set(edgeKey(edge.from, edge.to), edge);
+    }
+    return byKey;
   }, [edges]);
 
   const routes = useMemo<Route[]>(() => {
@@ -1386,6 +1885,14 @@ export default function GraphCanvas() {
     return JSON.stringify(exportLayout(graphLayout, slots, edges, defaultCenterSlotId), null, 2);
   }, [defaultCenterSlotId, edges, slots]);
 
+  const exportThemeJson = useMemo(() => {
+    return JSON.stringify(themeDraft, null, 2);
+  }, [themeDraft]);
+
+  const exportBundleJson = useMemo(() => {
+    return `// src/data/graph.json\n${exportTopologyJson}\n\n// src/data/layout.json\n${exportLayoutJson}\n\n// src/data/theme.json\n${exportThemeJson}`;
+  }, [exportLayoutJson, exportThemeJson, exportTopologyJson]);
+
   const labelPresentationById = useMemo(() => {
     const presentation = new Map<string, LabelPresentation>();
     const zoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
@@ -1440,7 +1947,7 @@ export default function GraphCanvas() {
         && slot.node.type !== 'intersection'
         && slot.node.type !== 'junction'
       ) {
-        const expandedLabel = getLabelPresentation(slot, editLayoutMode, true, false);
+        const expandedLabel = getLabelPresentation(slot, editLayoutMode, showEditCoords, true, false);
         const slotScreen = slotScreenById.get(slot.id);
 
         if (expandedLabel && slotScreen && viewportSize.width > 0 && viewportSize.height > 0) {
@@ -1492,7 +1999,7 @@ export default function GraphCanvas() {
         }
       }
 
-      const label = getLabelPresentation(slot, editLayoutMode, emphasized, nearMaxZoom || fullTextByZoom);
+      const label = getLabelPresentation(slot, editLayoutMode, showEditCoords, emphasized, nearMaxZoom || fullTextByZoom);
       if (label) {
         presentation.set(slot.id, label);
       }
@@ -1505,6 +2012,7 @@ export default function GraphCanvas() {
     expandedLabelSlotId,
     highlightedSlotIds,
     importantLowZoomSlotIds,
+    showEditCoords,
     slots,
     viewport,
     viewportSize.height,
@@ -1567,7 +2075,7 @@ export default function GraphCanvas() {
       const isEndpoint = endpointSlotIds.has(slot.id);
       const isHighlighted = highlightedSlotIds.has(slot.id);
       const isImportantLowZoom = importantLowZoomSlotIds.has(slot.id);
-      if (!editLayoutMode && lowZoom && !isImportantLowZoom) {
+      if (lowZoom && !isImportantLowZoom) {
         continue;
       }
 
@@ -1669,17 +2177,6 @@ export default function GraphCanvas() {
         routeAnchored,
         occludesHighlightedRoute: candidateOccludesHighlightedRoute,
       });
-    }
-
-    if (editLayoutMode) {
-      for (const candidate of candidates) {
-        layouts.set(candidate.id, {
-          left: candidate.left,
-          top: candidate.top,
-          occludesHighlightedRoute: candidate.occludesHighlightedRoute,
-        });
-      }
-      return layouts;
     }
 
     candidates.sort((a, b) => {
@@ -1796,7 +2293,7 @@ export default function GraphCanvas() {
       return suppressed;
     }
 
-    const expandedPresentation = getLabelPresentation(expandedSlot, editLayoutMode, true, true);
+    const expandedPresentation = getLabelPresentation(expandedSlot, editLayoutMode, showEditCoords, true, true);
     if (!expandedPresentation) {
       return suppressed;
     }
@@ -1833,6 +2330,7 @@ export default function GraphCanvas() {
     expandedLabelSlotId,
     labelLayoutById,
     labelPresentationById,
+    showEditCoords,
     slotById,
     slots,
   ]);
@@ -1864,10 +2362,10 @@ export default function GraphCanvas() {
       };
     }
 
-    const startX = Math.floor((bounds.minX - gridMargin) / gridSize) * gridSize;
-    const endX = Math.ceil((bounds.maxX + gridMargin) / gridSize) * gridSize;
-    const startY = Math.floor((bounds.minY - gridMargin) / gridSize) * gridSize;
-    const endY = Math.ceil((bounds.maxY + gridMargin) / gridSize) * gridSize;
+    const startX = Math.floor(activeEditBounds.minX / gridSize) * gridSize;
+    const endX = Math.ceil(activeEditBounds.maxX / gridSize) * gridSize;
+    const startY = Math.floor(activeEditBounds.minY / gridSize) * gridSize;
+    const endY = Math.ceil(activeEditBounds.maxY / gridSize) * gridSize;
 
     const xValues: number[] = [];
     const yValues: number[] = [];
@@ -1888,11 +2386,16 @@ export default function GraphCanvas() {
       minY: yValues[0] ?? 0,
       maxY: yValues[yValues.length - 1] ?? 0,
     };
-  }, [bounds, editLayoutMode, gridMargin, gridSize]);
+  }, [activeEditBounds.maxX, activeEditBounds.maxY, activeEditBounds.minX, activeEditBounds.minY, editLayoutMode, gridSize]);
 
   const setViewportClamped = (next: Viewport): void => {
     const clampedScale = clampScalar(next.scale, zoomLimits.minScale, zoomLimits.maxScale);
-    const clampedViewport = clampViewport({ ...next, scale: clampedScale }, bounds, viewportSizeRef.current);
+    const clampedViewport = clampViewport(
+      { ...next, scale: clampedScale },
+      activeBounds,
+      viewportSizeRef.current,
+      viewportClampOptions,
+    );
     setViewport(clampedViewport);
   };
 
@@ -1931,9 +2434,9 @@ export default function GraphCanvas() {
         tx: viewportSize.width / 2 - slot.x * startScale,
         ty: viewportSize.height / 2 - slot.y * startScale,
       };
-      return clampViewport(centered, bounds, viewportSize);
+      return clampViewport(centered, activeBounds, viewportSize, viewportClampOptions);
     });
-  }, [bounds, defaultCenterSlotId, slots, slotById, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
+  }, [activeBounds, defaultCenterSlotId, slots, slotById, viewportClampOptions, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
 
   useEffect(() => {
     if (viewportSize.width <= 0 || viewportSize.height <= 0) {
@@ -1942,7 +2445,7 @@ export default function GraphCanvas() {
 
     setViewport((previous) => {
       const scale = clampScalar(previous.scale, zoomLimits.minScale, zoomLimits.maxScale);
-      const clamped = clampViewport({ ...previous, scale }, bounds, viewportSize);
+      const clamped = clampViewport({ ...previous, scale }, activeBounds, viewportSize, viewportClampOptions);
 
       if (
         approxEqual(previous.scale, clamped.scale)
@@ -1954,7 +2457,7 @@ export default function GraphCanvas() {
 
       return clamped;
     });
-  }, [bounds, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
+  }, [activeBounds, viewportClampOptions, viewportSize, zoomLimits.maxScale, zoomLimits.minScale]);
 
   useEffect(() => {
     if (!EDIT_LAYOUT_ENABLED && editLayoutMode) {
@@ -1963,13 +2466,43 @@ export default function GraphCanvas() {
     }
 
     if (!editLayoutMode) {
+      clearEdgeAnchorHoldTimer();
       setEdgeEditorIndex(null);
+      setEdgeShapingMode(false);
+      setWeightOverlayMode('hidden');
+      setRestorePinnedToolsAfterEdgeTray(false);
+      setActiveSectionId(null);
+      setSectionDraftEdgeKeys([]);
+      setDraggingEdgeAnchor(null);
+      draggingEdgeAnchorRef.current = null;
+      setDevHexInputFocused(false);
+      setToolsTrayHeight(0);
+      setEditWorkspaceBounds(null);
+      editWorkspaceBoundsRef.current = null;
       return;
     }
 
+    clearEdgeAnchorHoldTimer();
+    setEdgeShapingMode(false);
+    setWeightOverlayMode('hidden');
+    setRestorePinnedToolsAfterEdgeTray(false);
+    setDraggingEdgeAnchor(null);
+    draggingEdgeAnchorRef.current = null;
     setEndpoints([]);
     setDraggingEndpoint(null);
-  }, [editLayoutMode]);
+    setDevHexInputFocused(false);
+    setToolsTrayHeight(0);
+    const seededBounds: WorldBounds = {
+      minX: defaultEditWorkspaceBounds.minX,
+      maxX: defaultEditWorkspaceBounds.maxX,
+      minY: defaultEditWorkspaceBounds.minY,
+      maxY: defaultEditWorkspaceBounds.maxY,
+      width: defaultEditWorkspaceBounds.width,
+      height: defaultEditWorkspaceBounds.height,
+    };
+    setEditWorkspaceBounds(seededBounds);
+    editWorkspaceBoundsRef.current = seededBounds;
+  }, [defaultEditWorkspaceBounds.height, defaultEditWorkspaceBounds.maxX, defaultEditWorkspaceBounds.maxY, defaultEditWorkspaceBounds.minX, defaultEditWorkspaceBounds.minY, defaultEditWorkspaceBounds.width, editLayoutMode]);
 
   useEffect(() => {
     if (Platform.OS !== 'web') {
@@ -2037,6 +2570,9 @@ export default function GraphCanvas() {
       if (endpointHoldTimerRef.current) {
         clearTimeout(endpointHoldTimerRef.current);
       }
+      if (edgeAnchorHoldTimerRef.current) {
+        clearTimeout(edgeAnchorHoldTimerRef.current);
+      }
       if (deletePromptTimerRef.current) {
         clearTimeout(deletePromptTimerRef.current);
       }
@@ -2078,7 +2614,7 @@ export default function GraphCanvas() {
   }, [toolsDockOpen]);
 
   useEffect(() => {
-    if (!toolsDockOpen || toolsPinned || activeToolHoldAction) {
+    if (!toolsDockOpen || toolsPinned || activeToolHoldAction || devHexInputFocused || edgeEditorIndex !== null) {
       clearToolsAutoHideTimer();
       return;
     }
@@ -2092,7 +2628,25 @@ export default function GraphCanvas() {
     return () => {
       clearToolsAutoHideTimer();
     };
-  }, [activeToolHoldAction, toolsDockOpen, toolsPinned]);
+  }, [activeToolHoldAction, devHexInputFocused, edgeEditorIndex, editConfigTab, toolsDockOpen, toolsPinned]);
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, (event) => {
+      const nextHeight = event?.endCoordinates?.height ?? 0;
+      setKeyboardHeight(nextHeight > 0 ? nextHeight : 0);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setKeyboardHeight(0);
+      setDevHexInputFocused(false);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   useEffect(() => {
     if (!routeInfoOpen || routeInfoPinned) {
@@ -2105,7 +2659,7 @@ export default function GraphCanvas() {
       setRouteInfoOpen(false);
       routeInfoTimerRef.current = null;
     }, ROUTE_INFO_AUTO_HIDE_MS);
-  }, [routeInfoOpen, routeInfoPinned]);
+  }, [infoTab, routeInfoOpen, routeInfoPinned]);
 
   useEffect(() => {
     if (!routeInfoOpen && routeInfoPinned) {
@@ -2134,6 +2688,20 @@ export default function GraphCanvas() {
     }
   }, [draggingEndpoint, toolsDockOpen, toolsPinned]);
 
+  useEffect(() => {
+    if (edgeEditorIndex !== null) {
+      return;
+    }
+    if (!restorePinnedToolsAfterEdgeTray) {
+      return;
+    }
+
+    if (editLayoutMode && toolsPinned && !toolsDockOpen) {
+      setToolsDockOpen(true);
+    }
+    setRestorePinnedToolsAfterEdgeTray(false);
+  }, [edgeEditorIndex, editLayoutMode, restorePinnedToolsAfterEdgeTray, toolsDockOpen, toolsPinned]);
+
   const triggerBlockedFeedback = (message: string): void => {
     setBlockedMessage(message);
     triggerHaptic('warning');
@@ -2155,6 +2723,28 @@ export default function GraphCanvas() {
       Animated.timing(shakeX, { toValue: 8, duration: 50, useNativeDriver: true }),
       Animated.timing(shakeX, { toValue: 0, duration: 45, useNativeDriver: true }),
     ]).start();
+  };
+
+  const handleCopyExportBundle = async (): Promise<void> => {
+    if (Platform.OS === 'web' && typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(exportBundleJson);
+        triggerHaptic('success');
+        return;
+      } catch {
+        // Fall back to share sheet below.
+      }
+    }
+
+    try {
+      await Share.share({
+        title: 'Tunnel Navigator JSON export',
+        message: exportBundleJson,
+      });
+      triggerHaptic('light');
+    } catch {
+      triggerBlockedFeedback('Unable to open copy/share');
+    }
   };
 
   const getSlotAtWorldPosition = (
@@ -2219,28 +2809,340 @@ export default function GraphCanvas() {
     return null;
   };
 
-  const getEdgeHitAtWorldPosition = (
+  const getEdgeHitDetailsAtWorldPosition = (
     worldX: number,
     worldY: number,
     radiusWorld: number,
-  ): number | null => {
-    let bestIndex: number | null = null;
+  ): EdgeHitDetails | null => {
+    let bestHit: EdgeHitDetails | null = null;
     let bestDistance = Number.POSITIVE_INFINITY;
 
-    for (let edgeIndex = 0; edgeIndex < edges.length; edgeIndex += 1) {
-      const edge = edges[edgeIndex];
-      const segments = getEdgeSegments(edge, slotById);
+    const currentEdges = edgesRef.current;
+    for (let edgeIndex = 0; edgeIndex < currentEdges.length; edgeIndex += 1) {
+      const edge = currentEdges[edgeIndex];
+      const points = getEdgePathPoints(edge, slotById);
+      if (points.length < 2) {
+        continue;
+      }
 
-      for (const segment of segments) {
-        const d = distanceToSegment(worldX, worldY, segment);
-        if (d <= radiusWorld && d < bestDistance) {
-          bestDistance = d;
-          bestIndex = edgeIndex;
+      for (let segmentIndex = 0; segmentIndex < points.length - 1; segmentIndex += 1) {
+        const a = points[segmentIndex];
+        const b = points[segmentIndex + 1];
+        const projection = projectPointToSegment(worldX, worldY, {
+          x1: a.x,
+          y1: a.y,
+          x2: b.x,
+          y2: b.y,
+        });
+
+        if (projection.distance <= radiusWorld && projection.distance < bestDistance) {
+          bestDistance = projection.distance;
+          bestHit = {
+            edgeIndex,
+            segmentIndex,
+            projectedX: projection.x,
+            projectedY: projection.y,
+            distance: projection.distance,
+          };
         }
       }
     }
 
-    return bestIndex;
+    return bestHit;
+  };
+
+  const getSnappedEdgeAnchorCandidate = (
+    worldX: number,
+    worldY: number,
+    currentViewport: Viewport,
+  ): { snappedX: number; snappedY: number } | null => {
+    const snappedX = Math.round(worldX / gridSize) * gridSize;
+    const snappedY = Math.round(worldY / gridSize) * gridSize;
+    const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
+    const snappedDistance = distance(worldX, worldY, snappedX, snappedY);
+    if (snappedDistance > snapRadiusWorld) {
+      return null;
+    }
+
+    return { snappedX, snappedY };
+  };
+
+  const getEdgeAnchorHitAtWorldPosition = (
+    worldX: number,
+    worldY: number,
+    radiusWorld: number,
+  ): EdgeAnchorHitDetails | null => {
+    let bestHit: EdgeAnchorHitDetails | null = null;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    const currentEdges = edgesRef.current;
+    for (let edgeIndex = 0; edgeIndex < currentEdges.length; edgeIndex += 1) {
+      const edge = currentEdges[edgeIndex];
+      const waypoints = edge.render?.waypoints ?? [];
+      for (let waypointIndex = 0; waypointIndex < waypoints.length; waypointIndex += 1) {
+        const waypoint = waypoints[waypointIndex];
+        const d = distance(worldX, worldY, waypoint.x, waypoint.y);
+        if (d <= radiusWorld && d < bestDistance) {
+          bestDistance = d;
+          bestHit = {
+            edgeIndex,
+            waypointIndex,
+            distance: d,
+          };
+        }
+      }
+    }
+
+    return bestHit;
+  };
+
+  const beginEdgeAnchorDrag = (edgeIndex: number, worldX: number, worldY: number): void => {
+    const edge = edgesRef.current[edgeIndex];
+    if (!edge) {
+      return;
+    }
+
+    const existingWaypoints = edge.render?.waypoints ?? [];
+    if (existingWaypoints.length >= MAX_EDGE_ANCHORS_PER_EDGE) {
+      triggerBlockedFeedback(`Edge supports up to ${MAX_EDGE_ANCHORS_PER_EDGE} anchors.`);
+      return;
+    }
+
+    const currentViewport = viewportRef.current;
+    const hit = getEdgeHitDetailsAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale);
+    if (!hit || hit.edgeIndex !== edgeIndex) {
+      return;
+    }
+
+    const originSnapped = getSnappedEdgeAnchorCandidate(worldX, worldY, currentViewport);
+    const dragState: DraggingEdgeAnchorState = {
+      edgeIndex,
+      mode: 'insert',
+      insertWaypointIndex: hit.segmentIndex,
+      waypointIndex: null,
+      worldX,
+      worldY,
+      snappedX: null,
+      snappedY: null,
+    };
+
+    setActiveSectionId(null);
+    setRestorePinnedToolsAfterEdgeTray(false);
+    setToolsDockOpen(false);
+    setDraggingEdgeAnchor(dragState);
+    draggingEdgeAnchorRef.current = dragState;
+    interactionRef.current = {
+      kind: 'edge-anchor-drag',
+      edgeIndex,
+      mode: 'insert',
+      insertWaypointIndex: hit.segmentIndex,
+      waypointIndex: null,
+      originWorldX: worldX,
+      originWorldY: worldY,
+      originSnappedX: originSnapped?.snappedX ?? null,
+      originSnappedY: originSnapped?.snappedY ?? null,
+      worldX,
+      worldY,
+      snappedX: null,
+      snappedY: null,
+    };
+    triggerHaptic('light');
+  };
+
+  const beginExistingEdgeAnchorDrag = (edgeIndex: number, waypointIndex: number): void => {
+    const edge = edgesRef.current[edgeIndex];
+    const waypoints = edge?.render?.waypoints ?? [];
+    const waypoint = waypoints[waypointIndex];
+    if (!edge || !waypoint) {
+      return;
+    }
+
+    const currentViewport = viewportRef.current;
+    const snapped = getSnappedEdgeAnchorCandidate(waypoint.x, waypoint.y, currentViewport);
+    const dragState: DraggingEdgeAnchorState = {
+      edgeIndex,
+      mode: 'move',
+      insertWaypointIndex: null,
+      waypointIndex,
+      worldX: waypoint.x,
+      worldY: waypoint.y,
+      snappedX: snapped?.snappedX ?? null,
+      snappedY: snapped?.snappedY ?? null,
+    };
+
+    setActiveSectionId(null);
+    setRestorePinnedToolsAfterEdgeTray(false);
+    setToolsDockOpen(false);
+    setDraggingEdgeAnchor(dragState);
+    draggingEdgeAnchorRef.current = dragState;
+    interactionRef.current = {
+      kind: 'edge-anchor-drag',
+      edgeIndex,
+      mode: 'move',
+      insertWaypointIndex: null,
+      waypointIndex,
+      originWorldX: waypoint.x,
+      originWorldY: waypoint.y,
+      originSnappedX: snapped?.snappedX ?? null,
+      originSnappedY: snapped?.snappedY ?? null,
+      worldX: waypoint.x,
+      worldY: waypoint.y,
+      snappedX: snapped?.snappedX ?? null,
+      snappedY: snapped?.snappedY ?? null,
+    };
+    triggerHaptic('light');
+  };
+
+  const finalizeEdgeAnchorDrag = (currentInteraction: Extract<InteractionState, { kind: 'edge-anchor-drag' }>): void => {
+    clearEdgeAnchorHoldTimer();
+    setDraggingEdgeAnchor(null);
+    draggingEdgeAnchorRef.current = null;
+
+    const edge = edgesRef.current[currentInteraction.edgeIndex];
+    if (!edge) {
+      return;
+    }
+
+    const fromSlot = slotById.get(edge.from);
+    const toSlot = slotById.get(edge.to);
+    if (!fromSlot || !toSlot) {
+      return;
+    }
+
+    const existingWaypoints = edge.render?.waypoints ?? [];
+    let nextWaypoints: Array<{ x: number; y: number }> | null = null;
+
+    if (currentInteraction.mode === 'insert') {
+      if (
+        currentInteraction.originSnappedX !== null
+        && currentInteraction.originSnappedY !== null
+        && currentInteraction.snappedX !== null
+        && currentInteraction.snappedY !== null
+        && approxEqual(currentInteraction.originSnappedX, currentInteraction.snappedX)
+        && approxEqual(currentInteraction.originSnappedY, currentInteraction.snappedY)
+      ) {
+        triggerBlockedFeedback('Hold edge, then drag to a different grid intersection.');
+        return;
+      }
+
+      const minDragDistanceWorld = TAP_MOVE_THRESHOLD / Math.max(0.001, viewportRef.current.scale);
+      const dragDistanceWorld = distance(
+        currentInteraction.worldX,
+        currentInteraction.worldY,
+        currentInteraction.originWorldX,
+        currentInteraction.originWorldY,
+      );
+      if (dragDistanceWorld < minDragDistanceWorld) {
+        triggerBlockedFeedback('Hold edge, then drag to a new grid intersection.');
+        return;
+      }
+
+      if (currentInteraction.snappedX === null || currentInteraction.snappedY === null) {
+        triggerBlockedFeedback('Hold edge, then drag to a grid intersection.');
+        return;
+      }
+      if (existingWaypoints.length >= MAX_EDGE_ANCHORS_PER_EDGE) {
+        triggerBlockedFeedback(`Edge supports up to ${MAX_EDGE_ANCHORS_PER_EDGE} anchors.`);
+        return;
+      }
+
+      const insertAt = Math.max(
+        0,
+        Math.min(existingWaypoints.length, currentInteraction.insertWaypointIndex ?? existingWaypoints.length),
+      );
+      const pathPoints = getEdgePathPoints(edge, slotById);
+      const previousPoint = pathPoints[insertAt];
+      const nextPoint = pathPoints[insertAt + 1];
+      const snapsToExistingPoint = existingWaypoints.some((waypoint) => {
+        return approxEqual(waypoint.x, currentInteraction.snappedX as number)
+          && approxEqual(waypoint.y, currentInteraction.snappedY as number);
+      });
+      if (
+        snapsToExistingPoint
+        || (previousPoint
+          && approxEqual(previousPoint.x, currentInteraction.snappedX)
+          && approxEqual(previousPoint.y, currentInteraction.snappedY))
+        || (nextPoint
+          && approxEqual(nextPoint.x, currentInteraction.snappedX)
+          && approxEqual(nextPoint.y, currentInteraction.snappedY))
+      ) {
+        triggerBlockedFeedback('Anchor already exists at this grid point.');
+        return;
+      }
+
+      nextWaypoints = [...existingWaypoints];
+      nextWaypoints.splice(insertAt, 0, {
+        x: currentInteraction.snappedX,
+        y: currentInteraction.snappedY,
+      });
+    } else {
+      const movingIndex = currentInteraction.waypointIndex;
+      if (movingIndex === null || movingIndex < 0 || movingIndex >= existingWaypoints.length) {
+        return;
+      }
+
+      if (currentInteraction.snappedX === null || currentInteraction.snappedY === null) {
+        nextWaypoints = existingWaypoints.filter((_, index) => index !== movingIndex);
+      } else {
+        const otherWaypoints = existingWaypoints.filter((_, index) => index !== movingIndex);
+        const matchesOtherWaypoint = otherWaypoints.some((waypoint) => {
+          return approxEqual(waypoint.x, currentInteraction.snappedX as number)
+            && approxEqual(waypoint.y, currentInteraction.snappedY as number);
+        });
+        const matchesEndpoint = (
+          approxEqual(fromSlot.x, currentInteraction.snappedX)
+          && approxEqual(fromSlot.y, currentInteraction.snappedY)
+        ) || (
+          approxEqual(toSlot.x, currentInteraction.snappedX)
+          && approxEqual(toSlot.y, currentInteraction.snappedY)
+        );
+        if (matchesOtherWaypoint || matchesEndpoint) {
+          nextWaypoints = otherWaypoints;
+        } else {
+          nextWaypoints = [...existingWaypoints];
+          nextWaypoints[movingIndex] = {
+            x: currentInteraction.snappedX,
+            y: currentInteraction.snappedY,
+          };
+        }
+      }
+    }
+
+    if (!nextWaypoints) {
+      return;
+    }
+
+    if (currentInteraction.mode === 'move' && nextWaypoints.length > 1) {
+      nextWaypoints = sortWaypointsAlongEdgeAxis(nextWaypoints, fromSlot, toSlot);
+    }
+    nextWaypoints = normalizeEdgeWaypoints(nextWaypoints, fromSlot, toSlot);
+
+    if (currentInteraction.mode === 'insert' && nextWaypoints.length <= existingWaypoints.length) {
+      triggerBlockedFeedback('Anchor must create a visible bend.');
+      return;
+    }
+
+    if (
+      currentInteraction.mode === 'move'
+      && existingWaypoints.length > 0
+      && nextWaypoints.length === 0
+      && currentInteraction.snappedX !== null
+      && currentInteraction.snappedY !== null
+    ) {
+      triggerBlockedFeedback('Anchor removed because edge stayed straight.');
+    }
+
+    const nextEdges = [...edgesRef.current];
+    nextEdges[currentInteraction.edgeIndex] = {
+      ...edge,
+      render: {
+        mode: 'orthogonal',
+        bend: getEdgeBendMode(edge),
+        waypoints: nextWaypoints,
+      },
+    };
+    setEdges(nextEdges);
+    triggerHaptic('success');
   };
 
   const handleSlotTap = (slotId: string): void => {
@@ -2359,6 +3261,7 @@ export default function GraphCanvas() {
     clearExpandedLabel();
     clearLabelHoldTimer();
     clearEndpointHoldTimer();
+    clearEdgeAnchorHoldTimer();
     hideDeletePrompt();
 
     if (touches.length >= 2) {
@@ -2403,8 +3306,73 @@ export default function GraphCanvas() {
     }
 
     if (EDIT_LAYOUT_ENABLED && editLayoutRef.current) {
+      if (edgeShapingMode && !activeSectionId) {
+        const anchorHit = getEdgeAnchorHitAtWorldPosition(worldX, worldY, DRAG_RADIUS_PX / currentViewport.scale);
+        if (anchorHit) {
+          beginExistingEdgeAnchorDrag(anchorHit.edgeIndex, anchorHit.waypointIndex);
+          return;
+        }
+      }
+
+      const sectionEndpointHandle = getSectionEndpointHandleAtScreenPosition(touch.x, touch.y, DRAG_RADIUS_PX);
+      if (sectionEndpointHandle) {
+        setActiveSectionId(sectionEndpointHandle.sectionId);
+        interactionRef.current = {
+          kind: 'section-endpoint-drag',
+          sectionId: sectionEndpointHandle.sectionId,
+          pathSlotIds: [sectionEndpointHandle.slotId],
+          pathEdgeKeys: [],
+          changedEdgePrevious: {},
+          lastRejectedEdgeKey: null,
+          lastRejectedKind: null,
+          snappedToSlot: true,
+        };
+        setSectionDraftEdgeKeys([]);
+        triggerHaptic('light');
+        return;
+      }
+
       const slotHit = getSlotAtWorldPosition(worldX, worldY, dragRadiusWorld);
       if (slotHit) {
+        if (activeSectionId) {
+          const endpointHandleFromSlot = sectionEndpointHandlesRef.current.find((handle) => {
+            return handle.sectionId === activeSectionId && handle.slotId === slotHit.slot.id;
+          });
+          if (endpointHandleFromSlot) {
+            interactionRef.current = {
+              kind: 'section-endpoint-drag',
+              sectionId: activeSectionId,
+              pathSlotIds: [slotHit.slot.id],
+              pathEdgeKeys: [],
+              changedEdgePrevious: {},
+              lastRejectedEdgeKey: null,
+              lastRejectedKind: null,
+              snappedToSlot: true,
+            };
+            setSectionDraftEdgeKeys([]);
+            triggerHaptic('light');
+            return;
+          }
+
+          const hasExistingSection = hasSectionAssignments(activeSectionId);
+          if (hasExistingSection && !isSlotAssignedToSection(slotHit.slot.id, activeSectionId)) {
+            triggerBlockedFeedback(`Section ${activeSectionId} exists. Start from an existing ${activeSectionId} slot.`);
+            return;
+          }
+          interactionRef.current = {
+            kind: 'section-draw',
+            sectionId: activeSectionId,
+            pathSlotIds: [slotHit.slot.id],
+            pathEdgeKeys: [],
+            changedEdgePrevious: {},
+            lastRejectedEdgeKey: null,
+            lastRejectedKind: null,
+          };
+          setSectionDraftEdgeKeys([]);
+          triggerHaptic('light');
+          return;
+        }
+
         interactionRef.current = {
           kind: 'slot-drag',
           slotId: slotHit.slot.id,
@@ -2413,9 +3381,10 @@ export default function GraphCanvas() {
       }
     }
 
-    const edgeHitIndex = EDIT_LAYOUT_ENABLED && editLayoutRef.current
-      ? getEdgeHitAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale)
+    const edgeHitDetails = EDIT_LAYOUT_ENABLED && editLayoutRef.current
+      ? getEdgeHitDetailsAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale)
       : null;
+    const edgeHitIndex = edgeHitDetails?.edgeIndex ?? null;
     const tapHit = getSlotAtWorldPosition(worldX, worldY, TAP_RADIUS_PX / currentViewport.scale);
     interactionRef.current = {
       kind: 'pan',
@@ -2428,6 +3397,29 @@ export default function GraphCanvas() {
       slotTapCandidateId: tapHit?.slot.id ?? null,
       edgeTapCandidateIndex: edgeHitIndex,
     };
+
+    if (
+      EDIT_LAYOUT_ENABLED
+      && editLayoutRef.current
+      && edgeShapingMode
+      && !activeSectionId
+      && edgeHitDetails
+    ) {
+      edgeAnchorHoldTimerRef.current = setTimeout(() => {
+        const activeInteraction = interactionRef.current;
+        if (
+          activeInteraction.kind === 'pan'
+          && !activeInteraction.moved
+          && activeInteraction.edgeTapCandidateIndex === edgeHitDetails.edgeIndex
+        ) {
+          const holdViewport = viewportRef.current;
+          const holdWorldX = screenToWorldX(activeInteraction.startX, holdViewport);
+          const holdWorldY = screenToWorldY(activeInteraction.startY, holdViewport);
+          beginEdgeAnchorDrag(edgeHitDetails.edgeIndex, holdWorldX, holdWorldY);
+        }
+        edgeAnchorHoldTimerRef.current = null;
+      }, EDGE_ANCHOR_HOLD_MS);
+    }
 
     if (!editLayoutRef.current && tapHit?.slot.id) {
       const slotId = tapHit.slot.id;
@@ -2453,6 +3445,15 @@ export default function GraphCanvas() {
 
     if (touches.length >= 2) {
       clearLabelHoldTimer();
+      clearEdgeAnchorHoldTimer();
+      if (currentInteraction.kind === 'edge-anchor-drag') {
+        setDraggingEdgeAnchor(null);
+        draggingEdgeAnchorRef.current = null;
+        interactionRef.current = { kind: 'idle' };
+      }
+      if (currentInteraction.kind === 'section-draw' || currentInteraction.kind === 'section-endpoint-drag') {
+        return;
+      }
       if (currentInteraction.kind !== 'pinch') {
         startPinch(touches[0], touches[1]);
       }
@@ -2533,12 +3534,396 @@ export default function GraphCanvas() {
       return;
     }
 
+    if (currentInteraction.kind === 'edge-anchor-drag') {
+      const currentViewport = viewportRef.current;
+      const worldX = screenToWorldX(touch.x, currentViewport);
+      const worldY = screenToWorldY(touch.y, currentViewport);
+      const snapped = getSnappedEdgeAnchorCandidate(worldX, worldY, currentViewport);
+      const nextDragState: DraggingEdgeAnchorState = {
+        edgeIndex: currentInteraction.edgeIndex,
+        mode: currentInteraction.mode,
+        insertWaypointIndex: currentInteraction.insertWaypointIndex,
+        waypointIndex: currentInteraction.waypointIndex,
+        worldX,
+        worldY,
+        snappedX: snapped?.snappedX ?? null,
+        snappedY: snapped?.snappedY ?? null,
+      };
+
+      interactionRef.current = {
+        ...currentInteraction,
+        worldX,
+        worldY,
+        snappedX: snapped?.snappedX ?? null,
+        snappedY: snapped?.snappedY ?? null,
+      };
+      setDraggingEdgeAnchor(nextDragState);
+      draggingEdgeAnchorRef.current = nextDragState;
+      return;
+    }
+
+    if (currentInteraction.kind === 'section-endpoint-drag') {
+      const currentViewport = viewportRef.current;
+      const worldX = screenToWorldX(touch.x, currentViewport);
+      const worldY = screenToWorldY(touch.y, currentViewport);
+      const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
+      const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
+      if (!slotHit) {
+        if (
+          currentInteraction.lastRejectedEdgeKey
+          || currentInteraction.lastRejectedKind
+          || currentInteraction.snappedToSlot
+        ) {
+          interactionRef.current = {
+            ...currentInteraction,
+            lastRejectedEdgeKey: null,
+            lastRejectedKind: null,
+            snappedToSlot: false,
+          };
+        }
+        return;
+      }
+
+      const candidateSlotId = slotHit.slot.id;
+      const pathSlotIds = currentInteraction.pathSlotIds;
+      const lastSlotId = pathSlotIds[pathSlotIds.length - 1];
+      if (!lastSlotId || candidateSlotId === lastSlotId) {
+        if (!currentInteraction.snappedToSlot) {
+          interactionRef.current = {
+            ...currentInteraction,
+            snappedToSlot: true,
+          };
+        }
+        return;
+      }
+
+      const edgeId = edgeKey(lastSlotId, candidateSlotId);
+      const canStepBack = pathSlotIds.length > 1 && candidateSlotId === pathSlotIds[pathSlotIds.length - 2];
+      if (canStepBack) {
+        const removedEdgeId = edgeKey(pathSlotIds[pathSlotIds.length - 2], lastSlotId);
+        const previousSectionId = currentInteraction.changedEdgePrevious[removedEdgeId];
+        restorePreviousSectionForEdge(removedEdgeId, previousSectionId);
+        const nextPathSlotIds = pathSlotIds.slice(0, -1);
+        const nextPathEdgeKeys = currentInteraction.pathEdgeKeys.slice(0, -1);
+        interactionRef.current = {
+          ...currentInteraction,
+          pathSlotIds: nextPathSlotIds,
+          pathEdgeKeys: nextPathEdgeKeys,
+          lastRejectedEdgeKey: null,
+          lastRejectedKind: null,
+          snappedToSlot: true,
+        };
+        setSectionDraftEdgeKeys(nextPathEdgeKeys);
+        return;
+      }
+
+      const existingSectionId = themeDraftRef.current.edgeSections[edgeId]?.trim().toUpperCase() ?? '';
+      if (existingSectionId && existingSectionId !== currentInteraction.sectionId) {
+        if (currentInteraction.lastRejectedEdgeKey !== edgeId || currentInteraction.lastRejectedKind !== 'occupied') {
+          triggerBlockedFeedback(`Edge already assigned to section ${existingSectionId}.`);
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: edgeId,
+          lastRejectedKind: 'occupied',
+          snappedToSlot: true,
+        };
+        return;
+      }
+
+      if (!edgeTypeByKey.has(edgeId)) {
+        const conflictingSectionAtCandidate = findAssignedSectionAtSlot(candidateSlotId);
+        if (conflictingSectionAtCandidate) {
+          const rejectionKey = `slot:${candidateSlotId}`;
+          if (
+            currentInteraction.lastRejectedEdgeKey !== rejectionKey
+            || currentInteraction.lastRejectedKind !== 'occupied'
+          ) {
+            triggerBlockedFeedback(`Edge already assigned to section ${conflictingSectionAtCandidate}.`);
+          }
+          interactionRef.current = {
+            ...currentInteraction,
+            lastRejectedEdgeKey: rejectionKey,
+            lastRejectedKind: 'occupied',
+            snappedToSlot: true,
+          };
+          return;
+        }
+
+        if (currentInteraction.lastRejectedKind === 'occupied') {
+          return;
+        }
+        if (currentInteraction.lastRejectedEdgeKey !== edgeId || currentInteraction.lastRejectedKind !== 'adjacent') {
+          triggerBlockedFeedback('Sections can only connect adjacent slots.');
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: edgeId,
+          lastRejectedKind: 'adjacent',
+          snappedToSlot: true,
+        };
+        return;
+      }
+
+      if (pathSlotIds.includes(candidateSlotId)) {
+        if (currentInteraction.lastRejectedKind === 'occupied') {
+          return;
+        }
+        if (currentInteraction.lastRejectedEdgeKey !== edgeId || currentInteraction.lastRejectedKind !== 'loop') {
+          triggerBlockedFeedback('Section adjust cannot loop to an earlier slot.');
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: edgeId,
+          lastRejectedKind: 'loop',
+          snappedToSlot: true,
+        };
+        return;
+      }
+
+      if (isSlotAssignedToSection(candidateSlotId, currentInteraction.sectionId)) {
+        const steppingAlongExistingSection = existingSectionId === currentInteraction.sectionId;
+        if (steppingAlongExistingSection) {
+          // Retraction path: moving through existing same-section edges is valid.
+        } else {
+          if (currentInteraction.lastRejectedKind === 'occupied') {
+            return;
+          }
+          const rejectionKey = `section-slot:${candidateSlotId}`;
+          if (currentInteraction.lastRejectedEdgeKey !== rejectionKey || currentInteraction.lastRejectedKind !== 'loop') {
+            triggerBlockedFeedback(`Section ${currentInteraction.sectionId} cannot reconnect to an existing slot.`);
+          }
+          interactionRef.current = {
+            ...currentInteraction,
+            lastRejectedEdgeKey: rejectionKey,
+            lastRejectedKind: 'loop',
+            snappedToSlot: true,
+          };
+          return;
+        }
+      }
+
+      const previousRawSectionId = themeDraftRef.current.edgeSections[edgeId] ?? null;
+      const changedEdgePrevious = { ...currentInteraction.changedEdgePrevious };
+      if (!(edgeId in changedEdgePrevious)) {
+        changedEdgePrevious[edgeId] = previousRawSectionId;
+      }
+
+      const nextPathSlotIds = [...pathSlotIds, candidateSlotId];
+      const nextPathEdgeKeys = [...currentInteraction.pathEdgeKeys, edgeId];
+      const remainsConnected = isSectionConnectedForInteraction(
+        currentInteraction.sectionId,
+        changedEdgePrevious,
+        nextPathEdgeKeys,
+      );
+      if (!remainsConnected) {
+        const rejectionKey = `disconnect:${edgeId}`;
+        if (
+          currentInteraction.lastRejectedEdgeKey !== rejectionKey
+          || currentInteraction.lastRejectedKind !== 'disconnect'
+        ) {
+          triggerBlockedFeedback(`Section ${currentInteraction.sectionId} must stay connected.`);
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: rejectionKey,
+          lastRejectedKind: 'disconnect',
+          snappedToSlot: true,
+        };
+        return;
+      }
+
+      if (existingSectionId === currentInteraction.sectionId) {
+        restorePreviousSectionForEdge(edgeId, null);
+      } else {
+        assignEdgeToSection(edgeId, currentInteraction.sectionId);
+      }
+
+      interactionRef.current = {
+        ...currentInteraction,
+        pathSlotIds: nextPathSlotIds,
+        pathEdgeKeys: nextPathEdgeKeys,
+        changedEdgePrevious,
+        lastRejectedEdgeKey: null,
+        lastRejectedKind: null,
+        snappedToSlot: true,
+      };
+      setSectionDraftEdgeKeys(nextPathEdgeKeys);
+      return;
+    }
+
+    if (currentInteraction.kind === 'section-draw') {
+      const currentViewport = viewportRef.current;
+      const worldX = screenToWorldX(touch.x, currentViewport);
+      const worldY = screenToWorldY(touch.y, currentViewport);
+      const snapRadiusWorld = SNAP_RADIUS_PX / currentViewport.scale;
+      const slotHit = getSlotAtWorldPosition(worldX, worldY, snapRadiusWorld);
+      if (!slotHit) {
+        if (currentInteraction.lastRejectedEdgeKey || currentInteraction.lastRejectedKind) {
+          interactionRef.current = {
+            ...currentInteraction,
+            lastRejectedEdgeKey: null,
+            lastRejectedKind: null,
+          };
+        }
+        return;
+      }
+
+      const candidateSlotId = slotHit.slot.id;
+      const pathSlotIds = currentInteraction.pathSlotIds;
+      const lastSlotId = pathSlotIds[pathSlotIds.length - 1];
+      if (!lastSlotId || candidateSlotId === lastSlotId) {
+        return;
+      }
+
+      const edgeId = edgeKey(lastSlotId, candidateSlotId);
+      const canStepBack = pathSlotIds.length > 1 && candidateSlotId === pathSlotIds[pathSlotIds.length - 2];
+      if (canStepBack) {
+        const removedEdgeId = edgeKey(pathSlotIds[pathSlotIds.length - 2], lastSlotId);
+        const previousSectionId = currentInteraction.changedEdgePrevious[removedEdgeId];
+        restorePreviousSectionForEdge(removedEdgeId, previousSectionId);
+        const nextPathSlotIds = pathSlotIds.slice(0, -1);
+        const nextPathEdgeKeys = currentInteraction.pathEdgeKeys.slice(0, -1);
+        interactionRef.current = {
+          ...currentInteraction,
+          pathSlotIds: nextPathSlotIds,
+          pathEdgeKeys: nextPathEdgeKeys,
+          lastRejectedEdgeKey: null,
+          lastRejectedKind: null,
+        };
+        setSectionDraftEdgeKeys(nextPathEdgeKeys);
+        return;
+      }
+
+      const existingSectionId = themeDraftRef.current.edgeSections[edgeId]?.trim().toUpperCase();
+      if (existingSectionId) {
+        if (currentInteraction.lastRejectedEdgeKey !== edgeId || currentInteraction.lastRejectedKind !== 'occupied') {
+          triggerBlockedFeedback(`Edge already assigned to section ${existingSectionId}.`);
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: edgeId,
+          lastRejectedKind: 'occupied',
+        };
+        return;
+      }
+
+      if (!edgeTypeByKey.has(edgeId)) {
+        const conflictingSectionAtCandidate = findAssignedSectionAtSlot(candidateSlotId);
+        if (conflictingSectionAtCandidate) {
+          const rejectionKey = `slot:${candidateSlotId}`;
+          if (
+            currentInteraction.lastRejectedEdgeKey !== rejectionKey
+            || currentInteraction.lastRejectedKind !== 'occupied'
+          ) {
+            triggerBlockedFeedback(`Edge already assigned to section ${conflictingSectionAtCandidate}.`);
+          }
+          interactionRef.current = {
+            ...currentInteraction,
+            lastRejectedEdgeKey: rejectionKey,
+            lastRejectedKind: 'occupied',
+          };
+          return;
+        }
+
+        if (currentInteraction.lastRejectedKind === 'occupied') {
+          return;
+        }
+        if (currentInteraction.lastRejectedEdgeKey !== edgeId || currentInteraction.lastRejectedKind !== 'adjacent') {
+          triggerBlockedFeedback('Sections can only connect adjacent slots.');
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: edgeId,
+          lastRejectedKind: 'adjacent',
+        };
+        return;
+      }
+
+      if (pathSlotIds.includes(candidateSlotId)) {
+        if (currentInteraction.lastRejectedKind === 'occupied') {
+          return;
+        }
+        if (currentInteraction.lastRejectedEdgeKey !== edgeId || currentInteraction.lastRejectedKind !== 'loop') {
+          triggerBlockedFeedback('Section draw cannot loop to an earlier slot.');
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: edgeId,
+          lastRejectedKind: 'loop',
+        };
+        return;
+      }
+
+      if (isSlotAssignedToSection(candidateSlotId, currentInteraction.sectionId)) {
+        if (currentInteraction.lastRejectedKind === 'occupied') {
+          return;
+        }
+        const rejectionKey = `section-slot:${candidateSlotId}`;
+        if (currentInteraction.lastRejectedEdgeKey !== rejectionKey || currentInteraction.lastRejectedKind !== 'loop') {
+          triggerBlockedFeedback(`Section ${currentInteraction.sectionId} cannot reconnect to an existing slot.`);
+        }
+        interactionRef.current = {
+          ...currentInteraction,
+          lastRejectedEdgeKey: rejectionKey,
+          lastRejectedKind: 'loop',
+        };
+        return;
+      }
+
+      const previousRawSectionId = themeDraftRef.current.edgeSections[edgeId] ?? null;
+      const changedEdgePrevious = { ...currentInteraction.changedEdgePrevious };
+      if (!(edgeId in changedEdgePrevious)) {
+        changedEdgePrevious[edgeId] = previousRawSectionId;
+      }
+      assignEdgeToSection(edgeId, currentInteraction.sectionId);
+
+      const nextPathSlotIds = [...pathSlotIds, candidateSlotId];
+      const nextPathEdgeKeys = [...currentInteraction.pathEdgeKeys, edgeId];
+      interactionRef.current = {
+        ...currentInteraction,
+        pathSlotIds: nextPathSlotIds,
+        pathEdgeKeys: nextPathEdgeKeys,
+        changedEdgePrevious,
+        lastRejectedEdgeKey: null,
+        lastRejectedKind: null,
+      };
+      setSectionDraftEdgeKeys(nextPathEdgeKeys);
+      return;
+    }
+
     if (currentInteraction.kind === 'slot-drag') {
       const currentViewport = viewportRef.current;
       const worldX = screenToWorldX(touch.x, currentViewport);
       const worldY = screenToWorldY(touch.y, currentViewport);
       const snappedX = Math.round(worldX / gridSize) * gridSize;
       const snappedY = Math.round(worldY / gridSize) * gridSize;
+      const currentBounds = editWorkspaceBoundsRef.current ?? defaultEditWorkspaceBounds;
+      const gridMinX = Math.floor(currentBounds.minX / gridSize) * gridSize;
+      const gridMaxX = Math.ceil(currentBounds.maxX / gridSize) * gridSize;
+      const gridMinY = Math.floor(currentBounds.minY / gridSize) * gridSize;
+      const gridMaxY = Math.ceil(currentBounds.maxY / gridSize) * gridSize;
+      const hitLeftBoundary = snappedX <= gridMinX;
+      const hitRightBoundary = snappedX >= gridMaxX;
+      const hitTopBoundary = snappedY <= gridMinY;
+      const hitBottomBoundary = snappedY >= gridMaxY;
+      const nextBounds = buildGridAlignedBounds(
+        hitLeftBoundary ? Math.min(currentBounds.minX, gridMinX - gridSize) : currentBounds.minX,
+        hitRightBoundary ? Math.max(currentBounds.maxX, gridMaxX + gridSize) : currentBounds.maxX,
+        hitTopBoundary ? Math.min(currentBounds.minY, gridMinY - gridSize) : currentBounds.minY,
+        hitBottomBoundary ? Math.max(currentBounds.maxY, gridMaxY + gridSize) : currentBounds.maxY,
+        gridSize,
+      );
+      const changedBounds = (
+        nextBounds.minX !== currentBounds.minX
+        || nextBounds.maxX !== currentBounds.maxX
+        || nextBounds.minY !== currentBounds.minY
+        || nextBounds.maxY !== currentBounds.maxY
+      );
+      if (changedBounds) {
+        setEditWorkspaceBounds(nextBounds);
+        editWorkspaceBoundsRef.current = nextBounds;
+      }
 
       setSlots((previous) => previous.map((slot) => {
         if (slot.id !== currentInteraction.slotId) {
@@ -2547,8 +3932,8 @@ export default function GraphCanvas() {
 
         return {
           ...slot,
-          x: clamp(snappedX, 0, 10000),
-          y: clamp(snappedY, 0, 10000),
+          x: snappedX,
+          y: snappedY,
         };
       }));
       return;
@@ -2561,6 +3946,7 @@ export default function GraphCanvas() {
 
       if (moved && !currentInteraction.moved) {
         clearLabelHoldTimer();
+        clearEdgeAnchorHoldTimer();
       }
 
       interactionRef.current = {
@@ -2595,6 +3981,7 @@ export default function GraphCanvas() {
   const onResponderRelease = (): void => {
     const currentInteraction = interactionRef.current;
     clearLabelHoldTimer();
+    clearEdgeAnchorHoldTimer();
 
     if (currentInteraction.kind === 'endpoint-drag') {
       clearEndpointHoldTimer();
@@ -2603,6 +3990,41 @@ export default function GraphCanvas() {
       } else if (!currentInteraction.moved && !editLayoutRef.current && !deletePrompt) {
         showExpandedLabel(currentInteraction.originSlotId);
       }
+    }
+
+    if (currentInteraction.kind === 'edge-anchor-drag') {
+      finalizeEdgeAnchorDrag(currentInteraction);
+      interactionRef.current = { kind: 'idle' };
+      return;
+    }
+
+    if (currentInteraction.kind === 'section-draw') {
+      if (currentInteraction.pathEdgeKeys.length > 0) {
+        triggerHaptic('success');
+      }
+      setSectionDraftEdgeKeys([]);
+      interactionRef.current = { kind: 'idle' };
+      return;
+    }
+
+    if (currentInteraction.kind === 'section-endpoint-drag') {
+      if (!currentInteraction.snappedToSlot) {
+        rollbackSectionEdgeChanges(currentInteraction.changedEdgePrevious);
+      } else if (
+        !isSectionConnectedForInteraction(
+          currentInteraction.sectionId,
+          currentInteraction.changedEdgePrevious,
+          currentInteraction.pathEdgeKeys,
+        )
+      ) {
+        rollbackSectionEdgeChanges(currentInteraction.changedEdgePrevious);
+        triggerBlockedFeedback(`Section ${currentInteraction.sectionId} must stay connected.`);
+      } else if (currentInteraction.pathEdgeKeys.length > 0) {
+        triggerHaptic('success');
+      }
+      setSectionDraftEdgeKeys([]);
+      interactionRef.current = { kind: 'idle' };
+      return;
     }
 
     if (currentInteraction.kind === 'pan' && !currentInteraction.moved) {
@@ -2615,6 +4037,9 @@ export default function GraphCanvas() {
 
       triggerScreenTapPulse(currentInteraction.startX, currentInteraction.startY);
       if (editLayoutRef.current && currentInteraction.edgeTapCandidateIndex !== null) {
+        const shouldRestorePinnedTools = editLayoutMode && toolsPinned && toolsDockOpen;
+        setRestorePinnedToolsAfterEdgeTray(shouldRestorePinnedTools);
+        setToolsDockOpen(false);
         setEdgeEditorIndex(currentInteraction.edgeTapCandidateIndex);
       } else if (currentInteraction.slotTapCandidateId) {
         handleSlotTap(currentInteraction.slotTapCandidateId);
@@ -2627,9 +4052,19 @@ export default function GraphCanvas() {
   const onResponderTerminate = (): void => {
     clearLabelHoldTimer();
     clearEndpointHoldTimer();
-    if (interactionRef.current.kind === 'endpoint-drag') {
+    clearEdgeAnchorHoldTimer();
+    const currentInteraction = interactionRef.current;
+    if (currentInteraction.kind === 'endpoint-drag') {
       setDraggingEndpoint(null);
       draggingEndpointRef.current = null;
+    }
+    if (currentInteraction.kind === 'edge-anchor-drag') {
+      setDraggingEdgeAnchor(null);
+      draggingEdgeAnchorRef.current = null;
+    }
+    if (currentInteraction.kind === 'section-draw' || currentInteraction.kind === 'section-endpoint-drag') {
+      rollbackSectionEdgeChanges(currentInteraction.changedEdgePrevious);
+      setSectionDraftEdgeKeys([]);
     }
 
     interactionRef.current = { kind: 'idle' };
@@ -2651,6 +4086,94 @@ export default function GraphCanvas() {
   };
 
   const selectedEdge = edgeEditorIndex !== null ? edges[edgeEditorIndex] : null;
+  const selectedEdgeCanShowOrthogonalDifference = selectedEdge
+    ? edgeCanShowOrthogonalDifference(selectedEdge, slotById)
+    : false;
+  const selectedEdgeModeToggleDisabled = Boolean(
+    selectedEdge
+    && (selectedEdge.render?.mode ?? 'straight') === 'straight'
+    && !selectedEdgeCanShowOrthogonalDifference,
+  );
+  const weightZoomRange = Math.max(0.0001, zoomLimits.maxScale - zoomLimits.minScale);
+  const weightZoomProgress = clampScalar((viewport.scale - zoomLimits.minScale) / weightZoomRange, 0, 1);
+  const resolvedWeightOverlayMode: EdgeWeightOverlayMode = (
+    weightOverlayMode === 'full' && weightZoomProgress < EDGE_WEIGHT_FULL_MIN_ZOOM_PROGRESS
+  )
+    ? 'compact'
+    : weightOverlayMode;
+
+  const edgeWeightBadges = useMemo(() => {
+    if (!editLayoutMode || resolvedWeightOverlayMode === 'hidden') {
+      return [] as Array<{
+        edgeIndex: number;
+        text: string;
+        left: number;
+        top: number;
+        right: number;
+        bottom: number;
+        selected: boolean;
+        pathLength: number;
+      }>;
+    }
+
+    const candidates = edges.map((edge, edgeIndex) => {
+      const midpoint = getEdgeMidpointWorld(edge, slotById);
+      if (!midpoint) {
+        return null;
+      }
+
+      const text = edge.weight.toFixed(1);
+      const width = Math.max(28, 10 + text.length * 7);
+      const height = 18;
+      const centerX = worldToScreenX(midpoint.x, viewport);
+      const centerY = worldToScreenY(midpoint.y, viewport);
+      return {
+        edgeIndex,
+        text,
+        left: centerX - width / 2,
+        top: centerY - height / 2,
+        right: centerX + width / 2,
+        bottom: centerY + height / 2,
+        selected: edgeEditorIndex === edgeIndex,
+        pathLength: midpoint.pathLength,
+      };
+    }).filter((item): item is {
+      edgeIndex: number;
+      text: string;
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+      selected: boolean;
+      pathLength: number;
+    } => item !== null);
+
+    if (resolvedWeightOverlayMode === 'full') {
+      return candidates;
+    }
+
+    const sorted = [...candidates].sort((a, b) => {
+      if (a.selected !== b.selected) {
+        return a.selected ? -1 : 1;
+      }
+      return b.pathLength - a.pathLength;
+    });
+
+    const accepted: typeof sorted = [];
+    for (const candidate of sorted) {
+      const collides = accepted.some((existing) => !(
+        candidate.right < existing.left - 2
+        || candidate.left > existing.right + 2
+        || candidate.bottom < existing.top - 2
+        || candidate.top > existing.bottom + 2
+      ));
+      if (!collides || candidate.selected) {
+        accepted.push(candidate);
+      }
+    }
+
+    return accepted;
+  }, [editLayoutMode, edgeEditorIndex, edges, resolvedWeightOverlayMode, slotById, viewport]);
 
   const updateSelectedEdge = (updater: (edge: Edge) => Edge): void => {
     if (edgeEditorIndex === null) {
@@ -2663,16 +4186,52 @@ export default function GraphCanvas() {
   };
 
   const adjustSelectedEdgeWeight = (delta: number): void => {
+    updateSelectedEdge((edge) => {
+      const rounded = Math.round((edge.weight + delta * 0.1) * 10) / 10;
+      if (rounded <= 0) {
+        triggerBlockedFeedback('Edge weight must stay above 0.');
+        return edge;
+      }
+      return {
+        ...edge,
+        weight: rounded,
+      };
+    });
+  };
+
+  const resetSelectedEdgeWeight = (): void => {
     updateSelectedEdge((edge) => ({
       ...edge,
-      weight: Math.max(1, edge.weight + delta),
+      weight: 1,
     }));
+  };
+
+  const toggleEdgeShapingMode = (): void => {
+    setEdgeShapingMode((previous) => {
+      const next = !previous;
+      if (next) {
+        setBlockedMessage('Shaping on: hold edge, drag to grid, release.');
+        if (blockedTimerRef.current) {
+          clearTimeout(blockedTimerRef.current);
+        }
+        blockedTimerRef.current = setTimeout(() => {
+          setBlockedMessage(null);
+          blockedTimerRef.current = null;
+        }, 1400);
+      }
+      return next;
+    });
+    triggerHaptic('light');
   };
 
   const toggleSelectedEdgeMode = (): void => {
     updateSelectedEdge((edge) => {
       const mode = edge.render?.mode ?? 'straight';
       if (mode === 'straight') {
+        if (!edgeCanShowOrthogonalDifference(edge, slotById)) {
+          triggerBlockedFeedback('Aligned edge: use shaping anchors for visible path changes.');
+          return edge;
+        }
         return {
           ...edge,
           render: {
@@ -2693,14 +4252,21 @@ export default function GraphCanvas() {
   };
 
   const toggleSelectedEdgeBend = (): void => {
-    updateSelectedEdge((edge) => ({
-      ...edge,
-      render: {
-        mode: 'orthogonal',
-        bend: getEdgeBendMode(edge) === 'hv' ? 'vh' : 'hv',
-        waypoints: edge.render?.waypoints,
-      },
-    }));
+    updateSelectedEdge((edge) => {
+      if (!edgeCanShowOrthogonalDifference(edge, slotById)) {
+        triggerBlockedFeedback('Aligned edge: use shaping anchors for visible path changes.');
+        return edge;
+      }
+
+      return {
+        ...edge,
+        render: {
+          mode: 'orthogonal',
+          bend: getEdgeBendMode(edge) === 'hv' ? 'vh' : 'hv',
+          waypoints: edge.render?.waypoints,
+        },
+      };
+    });
   };
 
   const swapEndpoints = (): void => {
@@ -2749,6 +4315,342 @@ export default function GraphCanvas() {
     if (!toolsPinned) {
       setToolsDockOpen(false);
     }
+  };
+
+  const toggleSectionMode = (sectionId: string): void => {
+    setActiveSectionId((previous) => (previous === sectionId ? null : sectionId));
+    setEdgeEditorIndex(null);
+    setSectionDraftEdgeKeys([]);
+    triggerHaptic('light');
+  };
+
+  const hasSectionAssignments = (sectionId: string): boolean => {
+    const normalizedSectionId = sectionId.trim().toUpperCase();
+    if (!normalizedSectionId) {
+      return false;
+    }
+
+    for (const rawSectionId of Object.values(themeDraftRef.current.edgeSections)) {
+      if (rawSectionId.trim().toUpperCase() === normalizedSectionId) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const findAssignedSectionAtSlot = (slotId: string): string | null => {
+    for (const edge of edges) {
+      if (edge.from !== slotId && edge.to !== slotId) {
+        continue;
+      }
+
+      const assignedRaw = themeDraftRef.current.edgeSections[edgeKey(edge.from, edge.to)];
+      const assigned = assignedRaw?.trim().toUpperCase() ?? '';
+      if (assigned) {
+        return assigned;
+      }
+    }
+
+    return null;
+  };
+
+  const getSectionEndpointHandleScreenPose = (
+    handle: SectionEndpointHandle,
+    currentViewport: Viewport,
+  ): { x: number; y: number; angle: number } | null => {
+    const slot = slotById.get(handle.slotId);
+    const neighbor = slotById.get(handle.neighborSlotId);
+    if (!slot || !neighbor) {
+      return null;
+    }
+
+    const dx = slot.x - neighbor.x;
+    const dy = slot.y - neighbor.y;
+    const length = Math.sqrt(dx * dx + dy * dy);
+    if (length <= 0.001) {
+      return null;
+    }
+
+    const ux = dx / length;
+    const uy = dy / length;
+    const slotScreenX = worldToScreenX(slot.x, currentViewport);
+    const slotScreenY = worldToScreenY(slot.y, currentViewport);
+    const slotRadiusPx = clamp(SLOT_RADIUS * currentViewport.scale, 8, 30);
+    const tipOffsetPx = slotRadiusPx + 10;
+    return {
+      x: slotScreenX + ux * tipOffsetPx,
+      y: slotScreenY + uy * tipOffsetPx,
+      angle: Math.atan2(uy, ux),
+    };
+  };
+
+  const getSectionEndpointHandleAtScreenPosition = (
+    screenX: number,
+    screenY: number,
+    radiusPx: number,
+  ): SectionEndpointHandle | null => {
+    const currentViewport = viewportRef.current;
+    for (const handle of sectionEndpointHandlesRef.current) {
+      const pose = getSectionEndpointHandleScreenPose(handle, currentViewport);
+      if (!pose) {
+        continue;
+      }
+      if (distance(screenX, screenY, pose.x, pose.y) <= radiusPx) {
+        return handle;
+      }
+    }
+    return null;
+  };
+
+  const isSlotAssignedToSection = (slotId: string, sectionId: string): boolean => {
+    const normalizedSectionId = sectionId.trim().toUpperCase();
+    if (!normalizedSectionId) {
+      return false;
+    }
+
+    for (const edge of edges) {
+      if (edge.from !== slotId && edge.to !== slotId) {
+        continue;
+      }
+      const assignedRaw = themeDraftRef.current.edgeSections[edgeKey(edge.from, edge.to)];
+      const assigned = assignedRaw?.trim().toUpperCase() ?? '';
+      if (assigned === normalizedSectionId) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
+  const isSectionEdgeKeySetConnected = (sectionEdgeKeys: Set<string>): boolean => {
+    if (sectionEdgeKeys.size <= 1) {
+      return true;
+    }
+
+    const adjacencyBySlot = new Map<string, Set<string>>();
+    for (const key of sectionEdgeKeys) {
+      const edge = edgeByKey.get(key);
+      if (!edge) {
+        continue;
+      }
+
+      const fromNeighbors = adjacencyBySlot.get(edge.from) ?? new Set<string>();
+      fromNeighbors.add(edge.to);
+      adjacencyBySlot.set(edge.from, fromNeighbors);
+
+      const toNeighbors = adjacencyBySlot.get(edge.to) ?? new Set<string>();
+      toNeighbors.add(edge.from);
+      adjacencyBySlot.set(edge.to, toNeighbors);
+    }
+
+    const slotIds = Array.from(adjacencyBySlot.keys());
+    if (slotIds.length <= 1) {
+      return true;
+    }
+
+    const visited = new Set<string>();
+    const stack = [slotIds[0]];
+    while (stack.length > 0) {
+      const currentSlotId = stack.pop() as string;
+      if (visited.has(currentSlotId)) {
+        continue;
+      }
+      visited.add(currentSlotId);
+      const neighbors = adjacencyBySlot.get(currentSlotId);
+      if (!neighbors) {
+        continue;
+      }
+      for (const neighbor of neighbors) {
+        if (!visited.has(neighbor)) {
+          stack.push(neighbor);
+        }
+      }
+    }
+
+    return visited.size === slotIds.length;
+  };
+
+  const isSectionConnectedForInteraction = (
+    sectionId: string,
+    changedEdgePrevious: Record<string, string | null>,
+    pathEdgeKeys: string[],
+  ): boolean => {
+    const normalizedSectionId = sectionId.trim().toUpperCase();
+    if (!normalizedSectionId) {
+      return true;
+    }
+
+    const currentSectionEdgeKeys = new Set<string>();
+    for (const [targetEdgeKey, rawSectionId] of Object.entries(themeDraftRef.current.edgeSections)) {
+      if (rawSectionId.trim().toUpperCase() === normalizedSectionId) {
+        currentSectionEdgeKeys.add(targetEdgeKey);
+      }
+    }
+
+    const activePathEdgeKeySet = new Set(pathEdgeKeys);
+    for (const [targetEdgeKey, previousSectionId] of Object.entries(changedEdgePrevious)) {
+      if (!activePathEdgeKeySet.has(targetEdgeKey)) {
+        if (previousSectionId?.trim().toUpperCase() === normalizedSectionId) {
+          currentSectionEdgeKeys.add(targetEdgeKey);
+        } else {
+          currentSectionEdgeKeys.delete(targetEdgeKey);
+        }
+        continue;
+      }
+
+      if (previousSectionId?.trim().toUpperCase() === normalizedSectionId) {
+        currentSectionEdgeKeys.delete(targetEdgeKey);
+      } else {
+        currentSectionEdgeKeys.add(targetEdgeKey);
+      }
+    }
+
+    return isSectionEdgeKeySetConnected(currentSectionEdgeKeys);
+  };
+
+  const assignEdgeToSection = (targetEdgeKey: string, sectionId: string): void => {
+    setThemeDraft((previous) => ({
+      ...previous,
+      edgeSections: {
+        ...previous.edgeSections,
+        [targetEdgeKey]: sectionId,
+      },
+    }));
+  };
+
+  const restorePreviousSectionForEdge = (
+    targetEdgeKey: string,
+    previousSectionId: string | null | undefined,
+  ): void => {
+    setThemeDraft((previous) => {
+      const nextEdgeSections = { ...previous.edgeSections };
+      if (previousSectionId && previousSectionId.trim().length > 0) {
+        nextEdgeSections[targetEdgeKey] = previousSectionId;
+      } else {
+        delete nextEdgeSections[targetEdgeKey];
+      }
+      return {
+        ...previous,
+        edgeSections: nextEdgeSections,
+      };
+    });
+  };
+
+  const clearSectionAssignments = (sectionId: string): void => {
+    const normalizedSectionId = sectionId.trim().toUpperCase();
+    if (!normalizedSectionId) {
+      return;
+    }
+
+    const currentInteraction = interactionRef.current;
+    if (
+      (currentInteraction.kind === 'section-draw' || currentInteraction.kind === 'section-endpoint-drag')
+      && currentInteraction.sectionId === normalizedSectionId
+    ) {
+      rollbackSectionEdgeChanges(currentInteraction.changedEdgePrevious);
+      interactionRef.current = { kind: 'idle' };
+      setSectionDraftEdgeKeys([]);
+    }
+
+    const removedAny = hasSectionAssignments(normalizedSectionId);
+    if (!removedAny) {
+      return;
+    }
+
+    setThemeDraft((previous) => {
+      const nextEdgeSections: Record<string, string> = {};
+      for (const [targetEdgeKey, rawSectionId] of Object.entries(previous.edgeSections)) {
+        if (rawSectionId.trim().toUpperCase() === normalizedSectionId) {
+          continue;
+        }
+        nextEdgeSections[targetEdgeKey] = rawSectionId;
+      }
+
+      return {
+        ...previous,
+        edgeSections: nextEdgeSections,
+      };
+    });
+
+    if (removedAny) {
+      triggerHaptic('light');
+    }
+  };
+
+  const rollbackSectionEdgeChanges = (changedEdgePrevious: Record<string, string | null>): void => {
+    const changedEntries = Object.entries(changedEdgePrevious);
+    if (changedEntries.length === 0) {
+      return;
+    }
+
+    setThemeDraft((previous) => {
+      const nextEdgeSections = { ...previous.edgeSections };
+      for (const [targetEdgeKey, previousSectionId] of changedEntries) {
+        if (previousSectionId && previousSectionId.trim().length > 0) {
+          nextEdgeSections[targetEdgeKey] = previousSectionId;
+        } else {
+          delete nextEdgeSections[targetEdgeKey];
+        }
+      }
+      return {
+        ...previous,
+        edgeSections: nextEdgeSections,
+      };
+    });
+  };
+
+  const toggleEditLayoutMode = (): void => {
+    setEditLayoutMode((previous) => {
+      const next = !previous;
+      if (next) {
+        setToolsDockOpen(true);
+      }
+      return next;
+    });
+    triggerHaptic('light');
+  };
+
+  const applySectionColorInput = (sectionId: string): void => {
+    const typedValue = sectionColorInputs[sectionId] ?? '';
+    const normalized = normalizeHexInput(typedValue).toUpperCase();
+    if (!isHexColor(normalized)) {
+      const fallback = themeDraft.sectionColors[sectionId] ?? DEFAULT_SECTION_COLOR;
+      setSectionColorInputs((previous) => ({ ...previous, [sectionId]: fallback }));
+      triggerBlockedFeedback(`Invalid hex code for section ${sectionId}.`);
+      return;
+    }
+
+    setThemeDraft((previous) => ({
+      ...previous,
+      sectionColors: {
+        ...previous.sectionColors,
+        [sectionId]: normalized,
+      },
+    }));
+    setSectionColorInputs((previous) => ({ ...previous, [sectionId]: normalized }));
+    triggerHaptic('light');
+  };
+
+  const applyNodeCategoryColorInput = (category: NodeType): void => {
+    const typedValue = nodeCategoryColorInputs[category] ?? '';
+    const normalized = normalizeHexInput(typedValue).toUpperCase();
+    if (!isHexColor(normalized)) {
+      const fallback = themeDraft.nodeCategoryColors[category];
+      setNodeCategoryColorInputs((previous) => ({ ...previous, [category]: fallback }));
+      triggerBlockedFeedback(`Invalid hex code for ${category}.`);
+      return;
+    }
+
+    setThemeDraft((previous) => ({
+      ...previous,
+      nodeCategoryColors: {
+        ...previous.nodeCategoryColors,
+        [category]: normalized,
+      },
+    }));
+    setNodeCategoryColorInputs((previous) => ({ ...previous, [category]: normalized }));
+    triggerHaptic('light');
   };
 
   const startToolHold = (actionId: HoldToolAction, action: () => void): void => {
@@ -2953,7 +4855,10 @@ export default function GraphCanvas() {
   });
   const topControlsTop = 10 + topInset;
   const topControlsHeight = 50;
-  const blockedToastTop = topControlsTop + topControlsHeight + 8;
+  const editModePillTop = topControlsTop + 58;
+  const blockedToastTop = editLayoutMode
+    ? editModePillTop + 30
+    : (topControlsTop + topControlsHeight + 8);
   const slotTapPulseOpacity = slotTapPulseAnim.interpolate({
     inputRange: [0, 1],
     outputRange: [0.45, 0],
@@ -2986,6 +4891,30 @@ export default function GraphCanvas() {
     inputRange: [0, 1],
     outputRange: [10, 0],
   });
+  const effectiveToolsTrayHeight = Math.max(TOOLS_MAIN_BUTTON_SIZE, toolsTrayHeight);
+  const effectiveDisplayToolsTrayHeight = Math.max(
+    TOOLS_MAIN_BUTTON_SIZE,
+    displayToolsTrayHeight > 0 ? displayToolsTrayHeight : TOOLS_MAIN_BUTTON_SIZE,
+  );
+  const baseToolsDockBottom = 10 + bottomInset;
+  const displayModeTrayBottomOffset = (TOOLS_MAIN_BUTTON_SIZE - effectiveDisplayToolsTrayHeight) / 2;
+  const toolsTrayBottomOffset = editLayoutMode
+    ? displayModeTrayBottomOffset
+    : ((TOOLS_MAIN_BUTTON_SIZE - effectiveToolsTrayHeight) / 2);
+  const desiredKeyboardDockLift = editLayoutMode && keyboardHeight > 0
+    ? Math.max(0, keyboardHeight - bottomInset) + 8
+    : 0;
+  const minVisibleTrayTop = topInset + 12;
+  const maxAllowedDockBottom = viewportSize.height > 0
+    ? Math.max(
+      baseToolsDockBottom,
+      viewportSize.height - minVisibleTrayTop - toolsTrayBottomOffset - effectiveToolsTrayHeight,
+    )
+    : (baseToolsDockBottom + desiredKeyboardDockLift);
+  const maxKeyboardDockLift = Math.max(0, maxAllowedDockBottom - baseToolsDockBottom);
+  const keyboardDockLift = Math.min(desiredKeyboardDockLift, maxKeyboardDockLift);
+  const toolsDockBottom = baseToolsDockBottom + keyboardDockLift;
+  const edgeTrayWidth = Math.min(300, Math.max(224, viewportSize.width - 76));
 
   return (
     <Animated.View
@@ -3072,6 +5001,11 @@ export default function GraphCanvas() {
               const key = edgeKey(edge.from, edge.to);
               const routeColor = routeEdgeColors.get(key);
               const isHighlighted = Boolean(routeColor);
+              const edgeSectionId = themeDraft.edgeSections[key]?.trim().toUpperCase() ?? '';
+              const sectionColorRaw = edgeSectionId.length > 0 ? themeDraft.sectionColors[edgeSectionId] : null;
+              const sectionColor = sectionColorRaw && isHexColor(sectionColorRaw) ? sectionColorRaw : DEFAULT_SECTION_COLOR;
+              const isSectionEdge = edgeSectionId.length > 0;
+              const isDraftSectionEdge = sectionDraftEdgeKeySet.has(key);
               const revealIndex = primaryRouteEdgeIndex.get(key);
               const primaryFlow = primaryRouteEdgeFlow.get(key);
               const segments = getEdgeSegments(edge, slotById);
@@ -3089,11 +5023,20 @@ export default function GraphCanvas() {
                 }
 
                 const angle = Math.atan2(dy, dx);
-                const edgeColor = routeColor ?? (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f');
+                const edgeColor = routeColor ?? (isSectionEdge ? sectionColor : (EDGE_TYPE_COLORS[edge.type] ?? '#4a627f'));
                 const isStairsEdge = edge.type === 'stairs';
                 const isRampEdge = edge.type === 'ramp';
-                const strokeHeight = isHighlighted ? 4 : 2;
+                const strokeHeight = isHighlighted ? 4 : (isSectionEdge ? 3 : 2);
                 const trackHeight = isRampEdge ? strokeHeight + 3 : strokeHeight + 2;
+                const sectionGlowStyle = isDraftSectionEdge
+                  ? {
+                    shadowColor: edgeColor,
+                    shadowOpacity: 0.72,
+                    shadowRadius: 7,
+                    shadowOffset: { width: 0, height: 0 },
+                    elevation: 4,
+                  }
+                  : null;
                 const trackStyle = {
                   left: (x1 + x2) / 2 - length / 2,
                   top: (y1 + y2) / 2 - trackHeight / 2,
@@ -3152,6 +5095,7 @@ export default function GraphCanvas() {
                       style={[
                         styles.edgeTrack,
                         trackStyle,
+                        sectionGlowStyle,
                         {
                           opacity: highlightedOpacity,
                         },
@@ -3239,6 +5183,7 @@ export default function GraphCanvas() {
                     style={[
                       styles.edgeTrack,
                       trackStyle,
+                      sectionGlowStyle,
                     ]}
                   >
                     <View
@@ -3296,6 +5241,79 @@ export default function GraphCanvas() {
               });
             })}
 
+          {editLayoutMode
+            ? (edgeShapingMode
+              ? edges.flatMap((edge, edgeIndex) => (edge.render?.waypoints ?? []).map((waypoint, waypointIndex) => {
+                return { edge, edgeIndex, waypoint, waypointIndex };
+              }))
+              : (selectedEdge ? (selectedEdge.render?.waypoints ?? []).map((waypoint, waypointIndex) => ({
+                edge: selectedEdge,
+                edgeIndex: edgeEditorIndex ?? -1,
+                waypoint,
+                waypointIndex,
+              })) : [])
+            ).map(({ edge, edgeIndex, waypoint, waypointIndex }) => {
+              const x = worldToScreenX(waypoint.x, viewport);
+              const y = worldToScreenY(waypoint.y, viewport);
+              return (
+                <View
+                  key={`edge-anchor-${edge.from}-${edge.to}-${edgeIndex}-${waypointIndex}`}
+                  style={[
+                    styles.edgeAnchorMarker,
+                    {
+                      left: x - 6,
+                      top: y - 6,
+                    },
+                  ]}
+                />
+              );
+            })
+            : null}
+
+          {editLayoutMode ? edgeWeightBadges.map((badge) => (
+            <View
+              key={`edge-weight-${badge.edgeIndex}`}
+              style={[
+                styles.edgeWeightBadge,
+                badge.selected ? styles.edgeWeightBadgeSelected : null,
+                {
+                  left: badge.left,
+                  top: badge.top,
+                },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.edgeWeightBadgeText,
+                  badge.selected ? styles.edgeWeightBadgeTextSelected : null,
+                ]}
+              >
+                {badge.text}
+              </Text>
+            </View>
+          )) : null}
+
+          {editLayoutMode && draggingEdgeAnchor ? (
+            <View
+              style={[
+                styles.edgeAnchorDraftMarker,
+                draggingEdgeAnchor.snappedX !== null && draggingEdgeAnchor.snappedY !== null
+                  ? styles.edgeAnchorDraftMarkerValid
+                  : styles.edgeAnchorDraftMarkerInvalid,
+                {
+                  left: worldToScreenX(
+                    draggingEdgeAnchor.snappedX ?? draggingEdgeAnchor.worldX,
+                    viewport,
+                  ) - 7,
+                  top: worldToScreenY(
+                    draggingEdgeAnchor.snappedY ?? draggingEdgeAnchor.worldY,
+                    viewport,
+                  ) - 7,
+                },
+              ]}
+            />
+          ) : null}
+
           {slots.map((slot) => {
             const highlighted = highlightedSlotIds.has(slot.id);
             const isDropTarget = dropPreviewSlotId === slot.id;
@@ -3308,7 +5326,7 @@ export default function GraphCanvas() {
             const labelLayout = labelLayoutById.get(slot.id);
             const labelPresentation = labelPresentationById.get(slot.id);
             const expandedLabelPresentation = isExpandedLabel
-              ? getLabelPresentation(slot, editLayoutMode, true, true)
+              ? getLabelPresentation(slot, editLayoutMode, showEditCoords, true, true)
               : null;
             const labelLeftLocal = labelLayout ? labelLayout.left - (slotScreenX - slotRadius) : 0;
             const labelTopLocal = labelLayout ? labelLayout.top - (slotScreenY - slotRadius) : 0;
@@ -3403,7 +5421,7 @@ export default function GraphCanvas() {
                         height: slotRadius * 2,
                         borderRadius: slotRadius,
                       },
-                      { borderColor: NODE_TYPE_COLORS[slot.node.type] ?? '#7f8a9b' },
+                      { borderColor: nodeTypeColorsForRender[slot.node.type] ?? '#7f8a9b' },
                       isExitOnly ? styles.slotExitOnly : null,
                       highlighted
                         ? [
@@ -3411,10 +5429,10 @@ export default function GraphCanvas() {
                           {
                             borderColor: isExitOnly
                               ? '#ffbe70'
-                              : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                              : (nodeTypeColorsForRender[slot.node.type] ?? '#dceaff'),
                             shadowColor: isExitOnly
                               ? '#ffbe70'
-                              : (NODE_TYPE_COLORS[slot.node.type] ?? '#dceaff'),
+                              : (nodeTypeColorsForRender[slot.node.type] ?? '#dceaff'),
                           },
                         ]
                         : null,
@@ -3477,6 +5495,37 @@ export default function GraphCanvas() {
               </View>
             );
           })}
+
+            {editLayoutMode ? (
+              sectionEndpointHandles.map((handle) => {
+                const pose = getSectionEndpointHandleScreenPose(handle, viewport);
+                if (!pose) {
+                  return null;
+                }
+                const sectionColorRaw = themeDraft.sectionColors[handle.sectionId];
+                const sectionColor = sectionColorRaw && isHexColor(sectionColorRaw)
+                  ? sectionColorRaw
+                  : DEFAULT_SECTION_COLOR;
+                const isActiveSectionHandle = activeSectionId === handle.sectionId;
+                return (
+                  <View
+                    key={`section-endpoint-${handle.id}`}
+                    style={[
+                      styles.sectionEndpointHandle,
+                      {
+                        left: pose.x - 9,
+                        top: pose.y - 9,
+                        opacity: isActiveSectionHandle ? 1 : 0.82,
+                        transform: [{ rotate: `${pose.angle}rad` }],
+                      },
+                    ]}
+                  >
+                    <View style={[styles.sectionEndpointStem, { backgroundColor: sectionColor }]} />
+                    <View style={[styles.sectionEndpointDot, { borderColor: sectionColor }]} />
+                  </View>
+                );
+              })
+            ) : null}
 
             {endpointOrder(endpoints).map((endpoint) => {
               const baseSlot = slotById.get(endpoint.slotId);
@@ -3691,6 +5740,17 @@ export default function GraphCanvas() {
             <MaterialCommunityIcons name="information-outline" size={21} color="#dce8fa" />
           </Pressable>
         </View>
+        {editLayoutMode ? (
+          <View style={[styles.editModePill, { top: editModePillTop }]}>
+            <Text style={styles.editModePillText}>DEV MODE</Text>
+          </View>
+        ) : null}
+        {editLayoutMode && edgeShapingMode ? (
+          <View pointerEvents="none" style={[styles.shapingModePill, { bottom: 10 + bottomInset }]}>
+            <MaterialCommunityIcons name="vector-polyline" size={13} color="#ecf5ff" />
+            <Text style={styles.shapingModePillText}>SHAPING ON</Text>
+          </View>
+        ) : null}
 
         {focusHintVisible ? (
           <Animated.View
@@ -3757,19 +5817,19 @@ export default function GraphCanvas() {
               <View style={styles.legendWrap}>
                 <Text style={styles.legendSectionTitle}>Slots</Text>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.building }]} />
+                  <View style={[styles.legendSlotSwatch, { borderColor: nodeTypeColorsForRender.building }]} />
                   <Text style={styles.legendRowText}>Building</Text>
                 </View>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.junction }]} />
+                  <View style={[styles.legendSlotSwatch, { borderColor: nodeTypeColorsForRender.junction }]} />
                   <Text style={styles.legendRowText}>Junction</Text>
                 </View>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.intersection }]} />
+                  <View style={[styles.legendSlotSwatch, { borderColor: nodeTypeColorsForRender.intersection }]} />
                   <Text style={styles.legendRowText}>Intersection</Text>
                 </View>
                 <View style={styles.legendRow}>
-                  <View style={[styles.legendSlotSwatch, { borderColor: NODE_TYPE_COLORS.stairs }]} />
+                  <View style={[styles.legendSlotSwatch, { borderColor: nodeTypeColorsForRender.stairs }]} />
                   <Text style={styles.legendRowText}>Stairs</Text>
                 </View>
                 <View style={styles.legendRow}>
@@ -3815,105 +5875,381 @@ export default function GraphCanvas() {
         ) : null}
 
         {!draggingEndpoint ? (
-          <View style={[styles.toolsDock, { bottom: 10 + bottomInset }]}>
+          <View style={[styles.toolsDock, { bottom: toolsDockBottom }]}>
             <Animated.View
+              onLayout={(event) => {
+                const nextHeight = Math.round(event.nativeEvent.layout.height);
+                setToolsTrayHeight((previous) => (Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight));
+                if (!editLayoutMode) {
+                  setDisplayToolsTrayHeight((previous) => (Math.abs(previous - nextHeight) <= 1 ? previous : nextHeight));
+                }
+              }}
               pointerEvents={toolsDockOpen ? 'auto' : 'none'}
               style={[
                 styles.toolsDockTray,
                 {
+                  bottom: toolsTrayBottomOffset,
                   opacity: toolsDockAnim,
                   transform: [{ translateX: toolsDockTranslateX }],
                 },
               ]}
             >
-              <View style={styles.toolsDockActionsRow}>
-                <Pressable
-                  hitSlop={10}
-                  style={({ pressed }) => [
-                    styles.toolsDockIconButton,
-                    endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
-                    pressed ? styles.dockButtonPressed : null,
-                  ]}
-                  disabled={endpoints.length !== 2}
-                  onPress={() => runToolAction(swapEndpoints)}
-                  accessibilityLabel="Swap endpoints"
-                >
-                  <MaterialCommunityIcons
-                    name="swap-horizontal"
-                    size={19}
-                    color={endpoints.length !== 2 ? '#8ea5c6' : '#cfe0f8'}
-                  />
-                </Pressable>
-                <Pressable
-                  hitSlop={10}
-                  style={({ pressed }) => [
-                    styles.toolsDockIconButton,
-                    endpoints.length === 0 ? styles.toolsDockButtonDisabled : null,
-                    pressed ? styles.dockButtonPressed : null,
-                  ]}
-                  disabled={endpoints.length === 0}
-                  onPress={() => runToolAction(clearEndpoints)}
-                  accessibilityLabel="Clear endpoints"
-                >
-                  <MaterialCommunityIcons
-                    name="restart"
-                    size={19}
-                    color={endpoints.length === 0 ? '#8ea5c6' : '#cfe0f8'}
-                  />
-                </Pressable>
-                <Pressable
-                  hitSlop={10}
-                  style={({ pressed }) => [
-                    styles.toolsDockIconButton,
-                    toolsPinned ? styles.toolsDockIconButtonActive : null,
-                    pressed ? styles.dockButtonPressed : null,
-                  ]}
-                  onPress={() => {
-                    setToolsPinned((previous) => !previous);
-                    triggerHaptic('light');
-                  }}
-                  accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
-                >
-                  <MaterialCommunityIcons
-                    name={toolsPinned ? 'pin' : 'pin-outline'}
-                    size={16}
-                    color={toolsPinned ? '#eef6ff' : '#c7d8ef'}
-                  />
-                </Pressable>
-              </View>
-              {EDIT_LAYOUT_ENABLED ? (
+              {editLayoutMode ? (
+                <>
+                <View style={styles.devEnvConfigPanel}>
+                    <View
+                      style={[
+                        styles.devEnvModeBanner,
+                        activeSectionId ? styles.devEnvModeBannerActive : styles.devEnvModeBannerInactive,
+                      ]}
+                    >
+                      <MaterialCommunityIcons
+                        name={activeSectionId ? 'vector-polyline' : 'vector-square-close'}
+                        size={14}
+                        color={activeSectionId ? '#eef8ff' : '#f0d6dd'}
+                      />
+                      <Text
+                        style={[
+                          styles.devEnvConfigModeText,
+                          activeSectionId ? styles.devEnvConfigModeTextActive : styles.devEnvConfigModeTextInactive,
+                        ]}
+                      >
+                        {activeSectionId ? `SECTION ${activeSectionId} MODE ON` : 'SECTION MODE OFF'}
+                      </Text>
+                    </View>
+                    <View style={styles.devEnvConfigTabsRow}>
+                      <Pressable
+                        style={[
+                          styles.devEnvConfigTabButton,
+                          editConfigTab === 'sections' ? styles.devEnvConfigTabButtonActive : null,
+                        ]}
+                        onPress={() => setEditConfigTab('sections')}
+                      >
+                        <Text
+                          style={[
+                            styles.devEnvConfigTabText,
+                            editConfigTab === 'sections' ? styles.devEnvConfigTabTextActive : null,
+                          ]}
+                        >
+                          Sections
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        style={[
+                          styles.devEnvConfigTabButton,
+                          editConfigTab === 'categories' ? styles.devEnvConfigTabButtonActive : null,
+                        ]}
+                        onPress={() => setEditConfigTab('categories')}
+                      >
+                        <Text
+                          style={[
+                            styles.devEnvConfigTabText,
+                            editConfigTab === 'categories' ? styles.devEnvConfigTabTextActive : null,
+                          ]}
+                        >
+                          Slot Categories
+                        </Text>
+                      </Pressable>
+                    </View>
+                    <View style={styles.devEnvConfigPanelContent}>
+                      {editConfigTab === 'sections' ? (
+                        SECTION_IDS.map((sectionId) => {
+                          const isActive = activeSectionId === sectionId;
+                          const isLit = sectionsWithPathData.has(sectionId);
+                          const configuredColor = themeDraft.sectionColors[sectionId] ?? DEFAULT_SECTION_COLOR;
+                          const inputValue = sectionColorInputs[sectionId] ?? configuredColor;
+                          const normalizedInput = normalizeHexInput(inputValue).toUpperCase();
+                          const previewColor = isHexColor(normalizedInput) ? normalizedInput : configuredColor;
+
+                          return (
+                            <View
+                              key={`section-row-${sectionId}`}
+                              style={[
+                                styles.devEnvConfigRow,
+                                isLit ? styles.devEnvConfigRowLit : styles.devEnvConfigRowDim,
+                              ]}
+                            >
+                              <Pressable
+                                hitSlop={8}
+                                style={[
+                                  styles.devEnvSectionButton,
+                                  isActive ? styles.devEnvSectionButtonActive : null,
+                                ]}
+                                onPress={() => toggleSectionMode(sectionId)}
+                              >
+                                <Text style={[styles.devEnvSectionButtonText, isActive ? styles.devEnvSectionButtonTextActive : null]}>
+                                  {sectionId}
+                                </Text>
+                              </Pressable>
+
+                              <Pressable
+                                hitSlop={8}
+                                disabled={!isLit}
+                                style={[
+                                  styles.devEnvSectionClearButton,
+                                  !isLit ? styles.devEnvSectionClearButtonDisabled : null,
+                                ]}
+                                onPress={() => clearSectionAssignments(sectionId)}
+                                accessibilityLabel={`Clear section ${sectionId}`}
+                              >
+                                <MaterialCommunityIcons
+                                  name="eraser-variant"
+                                  size={13}
+                                  color={isLit ? '#ffd7df' : '#93a6c2'}
+                                />
+                              </Pressable>
+
+                              <Pressable
+                                hitSlop={8}
+                                style={[styles.devEnvColorSwatch, { borderColor: previewColor }]}
+                                onPress={() => sectionColorInputRefs.current[sectionId]?.focus()}
+                              >
+                                <View style={[styles.devEnvColorSwatchFill, { backgroundColor: previewColor }]} />
+                              </Pressable>
+
+                              <TextInput
+                                ref={(input) => {
+                                  sectionColorInputRefs.current[sectionId] = input;
+                                }}
+                                value={sectionColorInputs[sectionId] ?? ''}
+                                style={styles.devEnvHexInput}
+                                autoCorrect={false}
+                                autoCapitalize="characters"
+                                placeholder="#808080"
+                                placeholderTextColor="#8da4c4"
+                                returnKeyType="done"
+                                onFocus={() => setDevHexInputFocused(true)}
+                                onBlur={() => setDevHexInputFocused(false)}
+                                onChangeText={(nextValue) => {
+                                  const sanitized = sanitizeHexDraftInput(nextValue);
+                                  setSectionColorInputs((previous) => ({ ...previous, [sectionId]: sanitized }));
+                                }}
+                                onSubmitEditing={() => applySectionColorInput(sectionId)}
+                                onEndEditing={() => applySectionColorInput(sectionId)}
+                              />
+                            </View>
+                          );
+                        })
+                      ) : (
+                        NODE_CATEGORY_ITEMS.map((item) => {
+                          const configuredColor = themeDraft.nodeCategoryColors[item.id];
+                          const inputValue = nodeCategoryColorInputs[item.id] ?? configuredColor;
+                          const normalizedInput = normalizeHexInput(inputValue).toUpperCase();
+                          const previewColor = isHexColor(normalizedInput) ? normalizedInput : configuredColor;
+                          return (
+                            <View key={`node-category-${item.id}`} style={styles.devEnvConfigRow}>
+                              <View style={styles.devEnvCategoryLabelWrap}>
+                                <Text style={styles.devEnvCategoryLabelText}>{item.label}</Text>
+                              </View>
+
+                              <Pressable
+                                hitSlop={8}
+                                style={[styles.devEnvColorSwatch, { borderColor: previewColor }]}
+                                onPress={() => nodeCategoryInputRefs.current[item.id]?.focus()}
+                              >
+                                <View style={[styles.devEnvColorSwatchFill, { backgroundColor: previewColor }]} />
+                              </Pressable>
+
+                              <TextInput
+                                ref={(input) => {
+                                  nodeCategoryInputRefs.current[item.id] = input;
+                                }}
+                                value={nodeCategoryColorInputs[item.id] ?? ''}
+                                style={styles.devEnvHexInput}
+                                autoCorrect={false}
+                                autoCapitalize="characters"
+                                placeholder="#000000"
+                                placeholderTextColor="#8da4c4"
+                                returnKeyType="done"
+                                onFocus={() => setDevHexInputFocused(true)}
+                                onBlur={() => setDevHexInputFocused(false)}
+                                onChangeText={(nextValue) => {
+                                  const sanitized = sanitizeHexDraftInput(nextValue);
+                                  setNodeCategoryColorInputs((previous) => ({ ...previous, [item.id]: sanitized }));
+                                }}
+                                onSubmitEditing={() => applyNodeCategoryColorInput(item.id)}
+                                onEndEditing={() => applyNodeCategoryColorInput(item.id)}
+                              />
+                            </View>
+                          );
+                        })
+                      )}
+                    </View>
+                  </View>
+                  <View style={[styles.toolsDockActionsRow, styles.devEnvBottomActionsRow]}>
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.toolsDockModeButton,
+                        weightOverlayMode !== 'hidden' ? styles.toolsDockIconButtonActive : null,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={() => runToolAction(() => {
+                        setWeightOverlayMode((previous) => {
+                          if (previous === 'hidden') {
+                            return 'compact';
+                          }
+                          if (previous === 'compact') {
+                            return 'full';
+                          }
+                          return 'hidden';
+                        });
+                        triggerHaptic('light');
+                      })}
+                      accessibilityLabel={`Edge weights ${getWeightOverlayModeLabel(weightOverlayMode)}`}
+                    >
+                      <Text style={styles.toolsDockModeText}>{getWeightOverlayModeLabel(weightOverlayMode)}</Text>
+                    </Pressable>
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.toolsDockIconButton,
+                        edgeShapingMode ? styles.toolsDockIconButtonActive : null,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={() => runToolAction(toggleEdgeShapingMode)}
+                      accessibilityLabel={getEdgeShapingModeLabel(edgeShapingMode)}
+                    >
+                      <MaterialCommunityIcons
+                        name="vector-polyline"
+                        size={16}
+                        color={edgeShapingMode ? '#eef6ff' : '#c7d8ef'}
+                      />
+                    </Pressable>
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.devEnvBottomActionsRightStart,
+                        styles.toolsDockIconButton,
+                        styles.toolsDockIconButtonActive,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={() => runToolAction(toggleEditLayoutMode)}
+                      accessibilityLabel="Toggle edit mode"
+                    >
+                      <MaterialCommunityIcons name="pencil" size={16} color="#eef6ff" />
+                    </Pressable>
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.toolsDockIconButton,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={() => runToolAction(() => setExportVisible(true))}
+                      accessibilityLabel="Export topology layout and theme"
+                    >
+                      <MaterialCommunityIcons name="export-variant" size={16} color="#cfe0f8" />
+                    </Pressable>
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.toolsDockIconButton,
+                        showEditCoords ? styles.toolsDockIconButtonActive : null,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={() => runToolAction(() => {
+                        setShowEditCoords((previous) => !previous);
+                        triggerHaptic('light');
+                      })}
+                      accessibilityLabel={showEditCoords ? 'Hide coordinates' : 'Show coordinates'}
+                    >
+                      <MaterialCommunityIcons name="grid" size={16} color={showEditCoords ? '#eef6ff' : '#cfe0f8'} />
+                    </Pressable>
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.toolsDockIconButton,
+                        toolsPinned ? styles.toolsDockIconButtonActive : null,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={() => {
+                        setToolsPinned((previous) => !previous);
+                        triggerHaptic('light');
+                      }}
+                      accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
+                    >
+                      <MaterialCommunityIcons
+                        name={toolsPinned ? 'pin' : 'pin-outline'}
+                        size={16}
+                        color={toolsPinned ? '#eef6ff' : '#c7d8ef'}
+                      />
+                    </Pressable>
+                  </View>
+                </>
+              ) : (
                 <View style={styles.toolsDockActionsRow}>
+                  {EDIT_LAYOUT_ENABLED ? (
+                    <Pressable
+                      hitSlop={10}
+                      style={({ pressed }) => [
+                        styles.toolsDockIconButton,
+                        pressed ? styles.dockButtonPressed : null,
+                      ]}
+                      onPress={toggleEditLayoutMode}
+                      accessibilityLabel="Enter edit mode"
+                    >
+                      <MaterialCommunityIcons
+                        name="pencil"
+                        size={16}
+                        color="#cfe0f8"
+                      />
+                    </Pressable>
+                  ) : null}
                   <Pressable
                     hitSlop={10}
                     style={({ pressed }) => [
-                      styles.toolsDockButton,
-                      editLayoutMode ? styles.toolsDockButtonActive : null,
+                      styles.toolsDockIconButton,
+                      endpoints.length !== 2 ? styles.toolsDockButtonDisabled : null,
                       pressed ? styles.dockButtonPressed : null,
                     ]}
-                    onPress={() => runToolAction(() => setEditLayoutMode((previous) => !previous))}
+                    disabled={endpoints.length !== 2}
+                    onPress={() => runToolAction(swapEndpoints)}
+                    accessibilityLabel="Swap endpoints"
                   >
-                    <Text style={styles.toolsDockButtonText}>{editLayoutMode ? 'Done' : 'Edit'}</Text>
+                    <MaterialCommunityIcons
+                      name="swap-horizontal"
+                      size={19}
+                      color={endpoints.length !== 2 ? '#8ea5c6' : '#cfe0f8'}
+                    />
                   </Pressable>
-                  {editLayoutMode ? (
-                    <>
-                      <Pressable
-                        hitSlop={10}
-                        style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                        onPress={() => runToolAction(() => setGridSizeIndex((previous) => (previous + 1) % GRID_SIZE_OPTIONS.length))}
-                      >
-                        <Text style={styles.toolsDockButtonText}>Grid {gridSize}</Text>
-                      </Pressable>
-                      <Pressable
-                        hitSlop={10}
-                        style={({ pressed }) => [styles.toolsDockButton, pressed ? styles.dockButtonPressed : null]}
-                        onPress={() => runToolAction(() => setExportVisible(true))}
-                      >
-                        <Text style={styles.toolsDockButtonText}>Export</Text>
-                      </Pressable>
-                    </>
-                  ) : null}
+                  <Pressable
+                    hitSlop={10}
+                    style={({ pressed }) => [
+                      styles.toolsDockIconButton,
+                      endpoints.length === 0 ? styles.toolsDockButtonDisabled : null,
+                      pressed ? styles.dockButtonPressed : null,
+                    ]}
+                    disabled={endpoints.length === 0}
+                    onPress={() => runToolAction(clearEndpoints)}
+                    accessibilityLabel="Clear endpoints"
+                  >
+                    <MaterialCommunityIcons
+                      name="restart"
+                      size={19}
+                      color={endpoints.length === 0 ? '#8ea5c6' : '#cfe0f8'}
+                    />
+                  </Pressable>
+                  <Pressable
+                    hitSlop={10}
+                    style={({ pressed }) => [
+                      styles.toolsDockIconButton,
+                      toolsPinned ? styles.toolsDockIconButtonActive : null,
+                      pressed ? styles.dockButtonPressed : null,
+                    ]}
+                    onPress={() => {
+                      setToolsPinned((previous) => !previous);
+                      triggerHaptic('light');
+                    }}
+                    accessibilityLabel={toolsPinned ? 'Pinned tools' : 'Unpinned tools'}
+                  >
+                    <MaterialCommunityIcons
+                      name={toolsPinned ? 'pin' : 'pin-outline'}
+                      size={16}
+                      color={toolsPinned ? '#eef6ff' : '#c7d8ef'}
+                    />
+                  </Pressable>
                 </View>
-              ) : null}
+              )}
             </Animated.View>
             <Pressable
               hitSlop={12}
@@ -3921,6 +6257,9 @@ export default function GraphCanvas() {
               onPress={() => {
                 triggerHaptic('light');
                 setToolsDockOpen((previous) => {
+                  if (!previous && editLayoutMode && edgeEditorIndex !== null) {
+                    setEdgeEditorIndex(null);
+                  }
                   if (previous && toolsPinned) {
                     setToolsPinned(false);
                   }
@@ -3930,7 +6269,7 @@ export default function GraphCanvas() {
               accessibilityLabel={toolsDockOpen ? 'Close tools' : 'Open tools'}
             >
               <MaterialCommunityIcons
-                name={toolsDockOpen ? 'close' : 'tools'}
+                name={toolsDockOpen ? 'close' : (editLayoutMode ? 'tune-variant' : 'tools')}
                 size={21}
                 color="#dce8fa"
               />
@@ -3945,81 +6284,91 @@ export default function GraphCanvas() {
             </Text>
           </View>
         ) : null}
-      </View>
-
-      <Modal
-        visible={selectedEdge !== null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setEdgeEditorIndex(null)}
-      >
-        <View style={styles.edgeEditorOverlay}>
-          <View style={styles.edgeEditorCard}>
-            <Text style={styles.edgeEditorTitle}>Edit Edge</Text>
-            {selectedEdge ? (
-              <>
-                <Text style={styles.edgeEditorMeta}>{`${selectedEdge.from} -> ${selectedEdge.to}`}</Text>
-                <Text style={[styles.edgeEditorMeta, styles.edgeEditorMetaSpacing]}>Type: {selectedEdge.type}</Text>
-
-                <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
-                  <Text style={styles.edgeEditorLabel}>Weight</Text>
-                  <View style={styles.edgeEditorStepper}>
-                    <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(-1)}>
-                      <Text style={styles.edgeEditorSmallBtnText}>-</Text>
-                    </Pressable>
-                    <Text style={styles.edgeEditorValue}>{selectedEdge.weight}</Text>
-                    <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(1)}>
-                      <Text style={styles.edgeEditorSmallBtnText}>+</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
-                  <Text style={styles.edgeEditorLabel}>Mode</Text>
-                  <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeMode}>
-                    <Text style={styles.edgeEditorActionBtnText}>
-                      {selectedEdge.render?.mode ?? 'straight'}
-                    </Text>
-                  </Pressable>
-                </View>
-
-                {(selectedEdge.render?.mode ?? 'straight') === 'orthogonal' ? (
-                  <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
-                    <Text style={styles.edgeEditorLabel}>Bend</Text>
-                    <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeBend}>
-                      <Text style={styles.edgeEditorActionBtnText}>{getEdgeBendMode(selectedEdge)}</Text>
-                    </Pressable>
-                  </View>
-                ) : null}
-              </>
-            ) : null}
-
-            <Pressable style={styles.edgeEditorCloseBtn} onPress={() => setEdgeEditorIndex(null)}>
-              <Text style={styles.edgeEditorCloseBtnText}>Done</Text>
+        {editLayoutMode && selectedEdge ? (
+          <View style={[styles.edgeEditorInline, { bottom: toolsDockBottom, width: edgeTrayWidth }]}>
+            <Pressable hitSlop={8} onPress={() => setEdgeEditorIndex(null)} style={[styles.edgeEditorInlineClose, styles.edgeEditorInlineCloseFloating]}>
+              <MaterialCommunityIcons name="close" size={15} color="#dce8fa" />
             </Pressable>
+            <Text style={[styles.edgeEditorMeta, styles.edgeEditorInlineMeta]}>{`${selectedEdge.from} <> ${selectedEdge.to}`}</Text>
+            <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
+              <Text style={styles.edgeEditorLabel}>Weight</Text>
+              <View style={styles.edgeEditorStepper}>
+                <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(-1)}>
+                  <Text style={styles.edgeEditorSmallBtnText}>-</Text>
+                </Pressable>
+                <Text style={styles.edgeEditorValue}>{selectedEdge.weight.toFixed(1)}</Text>
+                <Pressable style={styles.edgeEditorSmallBtn} onPress={() => adjustSelectedEdgeWeight(1)}>
+                  <Text style={styles.edgeEditorSmallBtnText}>+</Text>
+                </Pressable>
+                <Pressable
+                  style={[styles.edgeEditorSmallBtn, styles.edgeEditorResetBtn]}
+                  onPress={resetSelectedEdgeWeight}
+                  accessibilityLabel="Reset edge weight"
+                >
+                  <MaterialCommunityIcons name="backup-restore" size={14} color="#dce8fa" />
+                </Pressable>
+              </View>
+            </View>
+            <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
+              <Text style={styles.edgeEditorLabel}>Mode</Text>
+              <Pressable
+                disabled={selectedEdgeModeToggleDisabled}
+                style={[
+                  styles.edgeEditorActionBtn,
+                  selectedEdgeModeToggleDisabled ? styles.edgeEditorActionBtnDisabled : null,
+                ]}
+                onPress={toggleSelectedEdgeMode}
+              >
+                <Text style={styles.edgeEditorActionBtnText}>
+                  {selectedEdgeModeToggleDisabled
+                    ? 'straight (aligned)'
+                    : (selectedEdge.render?.mode ?? 'straight')}
+                </Text>
+              </Pressable>
+            </View>
+            {(selectedEdge.render?.mode ?? 'straight') === 'orthogonal' && selectedEdgeCanShowOrthogonalDifference ? (
+              <View style={[styles.edgeEditorRow, styles.edgeEditorRowSpacing]}>
+                <Text style={styles.edgeEditorLabel}>Bend</Text>
+                <Pressable style={styles.edgeEditorActionBtn} onPress={toggleSelectedEdgeBend}>
+                  <Text style={styles.edgeEditorActionBtnText}>{getEdgeBendLabel(getEdgeBendMode(selectedEdge))}</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
-        </View>
-      </Modal>
+        ) : null}
+      </View>
 
       <Modal visible={exportVisible} animationType="slide" onRequestClose={() => setExportVisible(false)}>
         <View style={styles.exportModal}>
           <View style={styles.exportHeader}>
-            <Text style={styles.exportTitle}>Export graph + layout</Text>
+            <Text style={styles.exportTitle}>Export graph + layout + theme</Text>
             <Pressable style={styles.exportCloseButton} onPress={() => setExportVisible(false)}>
               <Text style={styles.exportCloseButtonText}>Close</Text>
             </Pressable>
           </View>
           <Text style={styles.exportHint}>
-            Copy both JSON blocks and replace src/data/graph.json and src/data/layout.json.
+            Copy all JSON blocks and replace src/data/graph.json, src/data/layout.json, and src/data/theme.json.
           </Text>
+          <View style={styles.exportActionsRow}>
+            <Pressable
+              style={styles.exportActionButton}
+              onPress={() => {
+                void handleCopyExportBundle();
+              }}
+            >
+              <MaterialCommunityIcons
+                name={Platform.OS === 'web' ? 'content-copy' : 'share-variant'}
+                size={15}
+                color="#e6f0ff"
+              />
+              <Text style={styles.exportActionButtonText}>
+                {Platform.OS === 'web' ? 'Copy All' : 'Share / Copy All'}
+              </Text>
+            </Pressable>
+          </View>
 
           <ScrollView style={styles.exportBody}>
-            <Text selectable style={styles.exportCode}>
-              {'// src/data/graph.json\n'}
-              {exportTopologyJson}
-              {'\n\n// src/data/layout.json\n'}
-              {exportLayoutJson}
-            </Text>
+            <Text selectable style={styles.exportCode}>{exportBundleJson}</Text>
           </ScrollView>
         </View>
       </Modal>
@@ -4071,6 +6420,55 @@ const styles = StyleSheet.create({
     height: 6,
     borderRadius: 1,
     backgroundColor: '#f9edf0',
+  },
+  edgeAnchorMarker: {
+    position: 'absolute',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#9ed2ff',
+    backgroundColor: '#1f67b5',
+  },
+  edgeAnchorDraftMarker: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+  },
+  edgeAnchorDraftMarkerValid: {
+    borderColor: '#b6e5ff',
+    backgroundColor: '#2980dd',
+  },
+  edgeAnchorDraftMarkerInvalid: {
+    borderColor: '#ffb8c2',
+    backgroundColor: '#8d2f3e',
+  },
+  edgeWeightBadge: {
+    position: 'absolute',
+    minWidth: 28,
+    height: 18,
+    paddingHorizontal: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(116, 146, 183, 0.92)',
+    backgroundColor: 'rgba(15, 28, 44, 0.88)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  edgeWeightBadgeSelected: {
+    borderColor: '#7db7ff',
+    backgroundColor: 'rgba(39, 92, 162, 0.92)',
+  },
+  edgeWeightBadgeText: {
+    color: '#d5e4fb',
+    fontSize: 10,
+    fontWeight: '700',
+    includeFontPadding: false,
+  },
+  edgeWeightBadgeTextSelected: {
+    color: '#f3f8ff',
   },
   routeDirectionMarkerWrap: {
     position: 'absolute',
@@ -4281,6 +6679,32 @@ const styles = StyleSheet.create({
   endpointIndicatorArrowIcon: {
     marginLeft: 25,
   },
+  sectionEndpointHandle: {
+    position: 'absolute',
+    width: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionEndpointStem: {
+    position: 'absolute',
+    width: 10,
+    height: 2,
+    borderRadius: 2,
+    left: 2,
+    top: 8,
+    opacity: 0.88,
+  },
+  sectionEndpointDot: {
+    position: 'absolute',
+    right: -1,
+    top: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    borderWidth: 1.8,
+    backgroundColor: '#f3f8ff',
+  },
   slotLabelOnHighlightedRoute: {
     backgroundColor: 'rgba(14, 26, 40, 0.4)',
     borderColor: 'rgba(209, 228, 255, 0.28)',
@@ -4398,6 +6822,41 @@ const styles = StyleSheet.create({
     color: '#dce8fa',
     fontSize: 11,
     fontWeight: '700',
+  },
+  editModePill: {
+    position: 'absolute',
+    left: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#5d9bff',
+    backgroundColor: '#1d3f70',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+  },
+  editModePillText: {
+    color: '#edf4ff',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  shapingModePill: {
+    position: 'absolute',
+    left: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#5d9bff',
+    backgroundColor: '#1d3f70',
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  shapingModePillText: {
+    color: '#edf4ff',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.4,
   },
   dockButtonPressed: {
     opacity: 0.75,
@@ -4539,12 +6998,14 @@ const styles = StyleSheet.create({
   toolsDock: {
     position: 'absolute',
     right: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
+    width: TOOLS_MAIN_BUTTON_SIZE,
+    height: TOOLS_MAIN_BUTTON_SIZE,
   },
   toolsDockTray: {
-    marginRight: 8,
-    maxWidth: '78%',
+    position: 'absolute',
+    right: 46,
+    bottom: 0,
+    maxWidth: 320,
     flexDirection: 'column',
     alignItems: 'flex-start',
     gap: 6,
@@ -4552,8 +7013,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#355176',
-    paddingHorizontal: 8,
-    paddingVertical: 8,
+    padding: 8,
   },
   toolsDockHintStrip: {
     minHeight: 28,
@@ -4576,6 +7036,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     justifyContent: 'flex-start',
+  },
+  devEnvBottomActionsRow: {
+    alignSelf: 'stretch',
+    justifyContent: 'flex-start',
+  },
+  devEnvBottomActionsRightStart: {
+    marginLeft: 'auto',
   },
   toolsDockButton: {
     paddingHorizontal: 10,
@@ -4618,9 +7085,197 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  toolsDockModeText: {
+    color: '#dce8fa',
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+    textAlign: 'center',
+  },
+  devEnvConfigPanel: {
+    width: 286,
+    marginTop: 0,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#0f1a2a',
+  },
+  devEnvConfigPanelContent: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  devEnvModeBanner: {
+    marginHorizontal: 8,
+    marginTop: 8,
+    marginBottom: 4,
+    borderRadius: 8,
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  devEnvModeBannerActive: {
+    borderColor: '#5d9bff',
+    backgroundColor: '#2a7af5',
+  },
+  devEnvModeBannerInactive: {
+    borderColor: '#7d3f53',
+    backgroundColor: '#442431',
+  },
+  devEnvConfigModeText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    letterSpacing: 0.35,
+  },
+  devEnvConfigModeTextActive: {
+    color: '#eef8ff',
+  },
+  devEnvConfigModeTextInactive: {
+    color: '#f0d6dd',
+  },
+  devEnvConfigTabsRow: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingBottom: 4,
+  },
+  devEnvConfigTabButton: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  devEnvConfigTabButtonActive: {
+    borderColor: '#5d9bff',
+    backgroundColor: '#2a7af5',
+  },
+  devEnvConfigTabText: {
+    color: '#bcd0ee',
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  devEnvConfigTabTextActive: {
+    color: '#f3f8ff',
+  },
+  devEnvConfigTitle: {
+    marginTop: 2,
+    color: '#9eb6d8',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.4,
+    textTransform: 'uppercase',
+  },
+  devEnvConfigTitleSpacing: {
+    marginTop: 8,
+  },
+  devEnvConfigRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#2f4769',
+    backgroundColor: '#14253a',
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+  },
+  devEnvConfigRowLit: {
+    borderColor: '#5083be',
+  },
+  devEnvConfigRowDim: {
+    opacity: 0.74,
+  },
+  devEnvSectionButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#4d6f98',
+    backgroundColor: '#1b304b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  toolsDockModeButton: {
+    width: 80,
+    minHeight: 32,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: '#345174',
+    backgroundColor: '#14253a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  devEnvSectionButtonActive: {
+    borderColor: '#6aa8ff',
+    backgroundColor: '#2a7af5',
+  },
+  devEnvSectionButtonText: {
+    color: '#d8e7fb',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  devEnvSectionButtonTextActive: {
+    color: '#f5f9ff',
+  },
+  devEnvSectionClearButton: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#6b3f50',
+    backgroundColor: '#3e2330',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  devEnvSectionClearButtonDisabled: {
+    borderColor: '#34455f',
+    backgroundColor: '#1a273a',
+  },
+  devEnvColorSwatch: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    padding: 2,
+    backgroundColor: '#101a2b',
+  },
+  devEnvColorSwatchFill: {
+    flex: 1,
+    borderRadius: 4,
+  },
+  devEnvHexInput: {
+    flex: 1,
+    minHeight: 30,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#3a557a',
+    backgroundColor: '#0f1c2f',
+    color: '#d3e3fb',
+    fontSize: 12,
+    fontWeight: '700',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  devEnvCategoryLabelWrap: {
+    minWidth: 74,
+    justifyContent: 'center',
+  },
+  devEnvCategoryLabelText: {
+    color: '#c9dbf6',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   toolsMainButton: {
-    width: 38,
-    height: 38,
+    width: TOOLS_MAIN_BUTTON_SIZE,
+    height: TOOLS_MAIN_BUTTON_SIZE,
     borderRadius: 12,
     backgroundColor: '#162338',
     borderWidth: 1,
@@ -4648,6 +7303,45 @@ const styles = StyleSheet.create({
     color: '#9fbbe3',
     fontSize: 10,
     textAlign: 'center',
+  },
+  edgeEditorInline: {
+    position: 'absolute',
+    right: 58,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#355176',
+    backgroundColor: '#111d2d',
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+  },
+  edgeEditorInlineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+  },
+  edgeEditorInlineTitle: {
+    color: '#e8f1ff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  edgeEditorInlineClose: {
+    width: 24,
+    height: 24,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: '#365176',
+    backgroundColor: '#182a43',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  edgeEditorInlineCloseFloating: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 2,
+  },
+  edgeEditorInlineMeta: {
+    paddingRight: 34,
   },
   edgeEditorOverlay: {
     flex: 1,
@@ -4712,12 +7406,15 @@ const styles = StyleSheet.create({
     marginTop: -1,
   },
   edgeEditorValue: {
-    width: 28,
+    width: 34,
     marginHorizontal: 8,
     color: '#e4efff',
     textAlign: 'center',
     fontSize: 15,
     fontWeight: '700',
+  },
+  edgeEditorResetBtn: {
+    marginLeft: 4,
   },
   edgeEditorActionBtn: {
     minWidth: 112,
@@ -4729,10 +7426,24 @@ const styles = StyleSheet.create({
     borderColor: '#355077',
     alignItems: 'center',
   },
+  edgeEditorActionBtnActive: {
+    borderColor: '#5d9bff',
+    backgroundColor: '#2a7af5',
+  },
+  edgeEditorActionBtnDisabled: {
+    borderColor: '#304761',
+    backgroundColor: '#182637',
+    opacity: 0.72,
+  },
   edgeEditorActionBtnText: {
     color: '#dce8fa',
     fontSize: 12,
     fontWeight: '600',
+  },
+  edgeEditorHintText: {
+    marginTop: 8,
+    color: '#9bb7dc',
+    fontSize: 11,
   },
   edgeEditorCloseBtn: {
     marginTop: 6,
@@ -4782,6 +7493,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     marginBottom: 10,
+  },
+  exportActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  exportActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#2a3f5f',
+    backgroundColor: '#1a2840',
+  },
+  exportActionButtonText: {
+    color: '#dfeaff',
+    fontSize: 12,
+    fontWeight: '700',
   },
   exportBody: {
     flex: 1,

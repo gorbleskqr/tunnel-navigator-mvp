@@ -26,11 +26,13 @@ This file defines project guardrails for any coding agent working in this reposi
   - `API.md`
   - `DESIGN.md`
   - `WIREFRAME.md`
+  - `TERMINOLOGY.md` (single source of canonical project terminology)
 - Keep policy placeholders under `.github/`:
   - `SECURITY.md`
   - `CODE_OF_CONDUCT.md`
 - Local-only scratch/workflow docs live in `docs/local/`.
 - Entire `docs/local/` folder is intentionally gitignored.
+- If new vocabulary is introduced in chat/PR scope, update `docs/TERMINOLOGY.md` in that same PR.
 
 ## Mobile + Runtime Conventions
 
